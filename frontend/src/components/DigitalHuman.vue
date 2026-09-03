@@ -1,10 +1,40 @@
 <script setup lang="ts">
-import { computed, ref, watch, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 
 import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
 const audioEl = ref<HTMLAudioElement | null>(null)
+
+type XmovAvatarInstance = {
+  init: (options?: { onDownloadProgress?: (progress: number) => void }) => Promise<void>
+  speak: (ssml: string) => void
+  destroy: (reason?: string) => void
+}
+
+type XmovAvatarConstructor = new (options: {
+  containerId: string
+  appId: string
+  appSecret: string
+  gatewayServer: string
+  onMessage: (error: { code?: string; message?: string }) => void
+  onStatusChange?: (status: unknown) => void
+}) => XmovAvatarInstance
+
+declare global {
+  interface Window {
+    XmovAvatar?: XmovAvatarConstructor
+  }
+}
+
+const XINGYUN_SDK_URL = 'https://media.xingyun3d.com/xingyun3d/general/litesdk/xmovAvatar@latest.js'
+const XINGYUN_GATEWAY = 'https://nebula-agent.xingyun3d.com/user/v1/ttsa/session'
+const xingyunAppId = import.meta.env.VITE_XINGYUN_APP_ID as string | undefined
+const xingyunAppSecret = import.meta.env.VITE_XINGYUN_APP_SECRET as string | undefined
+const xingyunConfigured = Boolean(xingyunAppId && xingyunAppSecret)
+const xingyunReady = ref(false)
+const xingyunError = ref('')
+let xingyunAvatar: XmovAvatarInstance | null = null
 
 // 手势对应的 emoji 与描述
 const GESTURE_EMOJI: Record<string, { icon: string; label: string }> = {
@@ -48,6 +78,66 @@ function speakWithBrowser(text: string, speed: number) {
   window.speechSynthesis.speak(utter)
 }
 
+function escapeSsml(text: string): string {
+  return text.replace(/[&<>"']/g, (char) => {
+    const entities: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&apos;',
+    }
+    return entities[char]
+  })
+}
+
+function loadXingyunSdk(): Promise<void> {
+  if (window.XmovAvatar) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${XINGYUN_SDK_URL}"]`)
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true })
+      existing.addEventListener('error', () => reject(new Error('星云 SDK 加载失败')), { once: true })
+      return
+    }
+    const script = document.createElement('script')
+    script.src = XINGYUN_SDK_URL
+    script.async = true
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error('星云 SDK 加载失败'))
+    document.head.appendChild(script)
+  })
+}
+
+async function initXingyun() {
+  if (!xingyunConfigured || !xingyunAppId || !xingyunAppSecret) return
+  try {
+    await loadXingyunSdk()
+    if (!window.XmovAvatar) throw new Error('星云 SDK 未暴露 XmovAvatar')
+    xingyunAvatar = new window.XmovAvatar({
+      containerId: '#xingyun-avatar-container',
+      appId: xingyunAppId,
+      appSecret: xingyunAppSecret,
+      gatewayServer: XINGYUN_GATEWAY,
+      onMessage: (error) => {
+        xingyunError.value = error.message || '星云数字人发生错误'
+        console.error('[Xingyun]', error.code, error.message)
+      },
+    })
+    await xingyunAvatar.init()
+    xingyunReady.value = true
+  } catch (error) {
+    xingyunError.value = error instanceof Error ? error.message : '星云数字人初始化失败'
+    console.warn('[Xingyun] fallback to local avatar', error)
+  }
+}
+
+function speakWithXingyun(text: string): boolean {
+  if (!xingyunReady.value || !xingyunAvatar || !text) return false
+  xingyunAvatar.speak(`<speak>${escapeSsml(text)}</speak>`)
+  return true
+}
+
 // 监听播报事件
 watch(
   () => store.speaking,
@@ -58,7 +148,7 @@ watch(
         audioEl.value.src = store.speakingAudioUrl
         audioEl.value.playbackRate = store.speakingSpeed || 1.0
         audioEl.value.play().catch(() => {})
-      } else {
+      } else if (!speakWithXingyun(store.speakingText)) {
         // 使用浏览器原生 TTS（不需要 API Key）
         speakWithBrowser(store.speakingText, store.speakingSpeed || 1.0)
       }
@@ -66,17 +156,31 @@ watch(
   },
 )
 
+onMounted(() => {
+  void initXingyun()
+})
+
 // 组件卸载时停止播报
 onUnmounted(() => {
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel()
   }
+  xingyunAvatar?.destroy('component_unmounted')
+  xingyunAvatar = null
 })
 </script>
 
 <template>
   <section class="digital-human" aria-label="数字人">
     <div
+      v-if="xingyunConfigured"
+      id="xingyun-avatar-container"
+      class="xingyun-avatar"
+      :class="{ ready: xingyunReady }"
+      aria-label="魔珐星云数字人"
+    ></div>
+    <div
+      v-if="!xingyunReady"
       class="avatar"
       :class="[store.agentStatus, store.speakingExpression, { speaking: store.speaking }]"
     >
@@ -122,6 +226,18 @@ onUnmounted(() => {
   border: 3px solid var(--color-border);
   transition: all var(--transition-fast);
   position: relative;
+}
+.xingyun-avatar {
+  width: 220px;
+  height: 300px;
+  overflow: hidden;
+  display: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: #101820;
+}
+.xingyun-avatar.ready {
+  display: block;
 }
 .avatar.thinking,
 .avatar.running {

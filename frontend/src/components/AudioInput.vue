@@ -151,11 +151,19 @@ function stopRecording() {
 // 统一入口：直接使用录音上传 + 后端 Vosk 离线识别
 // （Web Speech API 需要连接 Google 服务器，国内不可用）
 function start() {
-  startRecording()
+  if (isWebSpeechAvailable()) {
+    startWebSpeech()
+  } else {
+    startRecording()
+  }
 }
 
 function stop() {
-  stopRecording()
+  if (recognition.value) {
+    stopWebSpeech()
+  } else {
+    stopRecording()
+  }
 }
 
 onUnmounted(() => {

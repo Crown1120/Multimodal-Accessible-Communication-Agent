@@ -38,11 +38,19 @@ export interface AudioTranscribeResult {
 export const api = {
   health: () => request<{ status: string; version: string; environment: string }>('/health'),
 
-  createSession: (payload: { scene?: Scene; mode?: Mode; user_id?: string | null }) =>
-    request<Session>('/sessions', {
+  createSession: async (payload: { scene?: Scene; mode?: Mode; user_id?: string | null }) => {
+    const session = await request<Partial<Session>>('/sessions', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }),
+    })
+    if (!session.session_id) {
+      throw new ApiError(
+        'ERR_1000',
+        '后端返回的不是 Bridge 会话，请确认后端地址和端口配置正确',
+      )
+    }
+    return session as Session
+  },
 
   getSession: (sessionId: string) => request<Session>(`/sessions/${sessionId}`),
 

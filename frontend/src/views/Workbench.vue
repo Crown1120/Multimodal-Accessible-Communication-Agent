@@ -19,12 +19,35 @@ watch(
   },
 )
 
+// 自动创建会话：页面加载即连接，无需用户点击
+async function autoConnect() {
+  try {
+    await store.createSession()
+  } catch (e) {
+    console.error('自动连接失败，将在 3 秒后重试', e)
+    // 失败后自动重试（最多 3 次）
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await new Promise((r) => setTimeout(r, 3000))
+      try {
+        await store.createSession()
+        return
+      } catch {
+        console.warn(`自动连接重试 ${attempt + 1}/3 失败`)
+      }
+    }
+    // 3 次都失败，状态保持 error，用户可手动点重新连接
+  }
+}
+
 onMounted(() => {
   document.documentElement.setAttribute('data-mode', store.mode)
+  // 页面加载后自动创建会话
+  autoConnect()
 })
 
-async function start() {
-  await store.createSession()
+// 手动重新连接（自动连接失败时可用）
+async function reconnect() {
+  await autoConnect()
 }
 
 const sceneInfo = computed<{ label: string; icon: 'hospital' | 'government' }>(() =>
@@ -74,8 +97,8 @@ const statusInfo = computed(() => {
         </span>
         <ModeSwitcher />
         <PreferencePanel />
-        <button v-if="!store.isConnected" class="primary start-btn" @click="start">
-          开始会话
+        <button v-if="store.status === 'error'" class="primary start-btn" @click="reconnect">
+          重新连接
         </button>
       </div>
     </header>

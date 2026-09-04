@@ -169,28 +169,42 @@ function ensureXingyunMuted() {
   xingyunMuteObserver.observe(container, { childList: true, subtree: true })
 }
 
-// 监听播报事件
+// 监听播报事件（TTS 异步化：先驱动嘴型，音频就绪后再播放）
 watch(
   () => store.speaking,
   (isSpeaking) => {
     if (isSpeaking && store.speakingText) {
       const speed = store.speakingSpeed || 1.0
-      if (store.speakingAudioUrl && audioEl.value) {
-        // 后端 TTS 音频负责发声；同时调用星云 SDK speak() 驱动嘴型与肢体动作（SDK 音频已静音）
-        if (xingyunReady.value && xingyunAvatar && !xingyunError.value) {
-          try {
-            xingyunAvatar.speak(buildSsml(store.speakingText, speed))
-          } catch (e) {
-            console.warn('[Xingyun] lip-sync speak failed:', e)
-          }
+      // 始终先驱动嘴型（星云 SDK speak 只驱动嘴型/动作，SDK 音频已静音）
+      if (xingyunReady.value && xingyunAvatar && !xingyunError.value) {
+        try {
+          xingyunAvatar.speak(buildSsml(store.speakingText, speed))
+        } catch (e) {
+          console.warn('[Xingyun] lip-sync speak failed:', e)
         }
+      }
+      // 如果已有音频（非异步模式），直接播放
+      if (store.speakingAudioUrl && audioEl.value) {
         audioEl.value.src = store.speakingAudioUrl
         audioEl.value.playbackRate = speed
         audioEl.value.play().catch(() => {})
-      } else if (!speakWithXingyun(store.speakingText)) {
-        // 无后端音频时：星云 SDK 播报（发声+嘴型），兜底浏览器 TTS
+      } else if (!xingyunReady.value) {
+        // 星云不可用时兜底浏览器 TTS
         speakWithBrowser(store.speakingText, speed)
       }
+    }
+  },
+)
+
+// 监听异步 TTS 音频就绪（digital_human.audio_ready 事件更新 speakingAudioUrl）
+watch(
+  () => store.speakingAudioUrl,
+  (audioUrl) => {
+    if (audioUrl && store.speaking && audioEl.value) {
+      const speed = store.speakingSpeed || 1.0
+      audioEl.value.src = audioUrl
+      audioEl.value.playbackRate = speed
+      audioEl.value.play().catch(() => {})
     }
   },
 )
@@ -250,19 +264,15 @@ watch(
         </div>
       </div>
 
-      <!-- 错误提示覆盖层 -->
+      <!-- 降级提示：友好提示，不暴露技术错误 -->
       <div v-if="xingyunError" class="xingyun-placeholder xingyun-error-overlay">
-        <div class="xingyun-error">
-          <div class="xingyun-error-title">
-            <BIcon name="alert" :size="15" />
-            3D 数字人暂不可用
+        <div class="degraded-avatar">
+          <div class="degraded-avatar-circle">
+            <BIcon name="bridge" :size="36" :stroke-width="1.8" />
           </div>
-          <div class="xingyun-error-msg">{{ xingyunError }}</div>
-          <div class="xingyun-error-hint">
-            请检查：<br />
-            ① AppID/AppSecret 是否正确<br />
-            ② <a href="https://nebula.xingyun3d.com/" target="_blank" rel="noopener">星云控制台</a> 是否已开通「形象授权」与「TTSA 播报」<br />
-            ③ 账户积分是否充足
+          <div class="degraded-avatar-text">
+            <div class="degraded-title">数字人维护中</div>
+            <div class="degraded-sub">文字对话、语音播报、路线指引均正常可用</div>
           </div>
         </div>
       </div>
@@ -296,10 +306,7 @@ watch(
         <WidgetPanel />
       </div>
 
-      <!-- 手势提示 -->
-      <div class="gesture-label" v-if="store.speaking && store.speakingGesture">
-        动作：{{ store.speakingGesture }}
-      </div>
+
     </div>
 
     <audio ref="audioEl" hidden></audio>
@@ -489,16 +496,6 @@ watch(
   font-weight: 600;
 }
 
-.gesture-label {
-  position: absolute;
-  right: 16px;
-  bottom: 14px;
-  z-index: 4;
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 0.8em;
-  font-weight: 600;
-}
-
 /* ===== 占位/加载/错误 ===== */
 .xingyun-placeholder {
   position: absolute;
@@ -567,33 +564,36 @@ watch(
   background: var(--color-primary-gradient);
   transition: width 0.3s ease;
 }
-.xingyun-error {
-  text-align: left;
-  font-size: 12px;
-  line-height: 1.5;
-  width: 100%;
-  max-width: 460px;
+/* 降级态：静态头像 + 友好提示 */
+.degraded-avatar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
 }
-.xingyun-error-title {
+.degraded-avatar-circle {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.3), rgba(14, 165, 183, 0.3));
+  border: 2px solid rgba(255, 255, 255, 0.15);
   display: flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  color: #93c5fd;
+}
+.degraded-avatar-text {
+  text-align: center;
+}
+.degraded-title {
+  font-size: 1.05em;
   font-weight: 700;
-  font-size: 13px;
-  color: #fcd34d;
+  color: #e2e8f0;
   margin-bottom: 4px;
 }
-.xingyun-error-msg {
-  color: #fecaca;
-  word-break: break-all;
-  margin-bottom: 6px;
-}
-.xingyun-error-hint {
-  color: #cbd5e1;
-  margin-top: 4px;
-}
-.xingyun-error-hint a {
-  color: #7aa2ff;
-  text-decoration: underline;
+.degraded-sub {
+  font-size: 0.82em;
+  color: #94a3b8;
+  line-height: 1.5;
 }
 </style>

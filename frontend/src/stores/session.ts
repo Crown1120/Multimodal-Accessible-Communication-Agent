@@ -72,6 +72,8 @@ export const useSessionStore = defineStore('session', () => {
       mode.value = res.mode
       scene.value = res.scene
       status.value = 'connected'
+      // 持久化 sessionId，刷新页面后可恢复
+      try { localStorage.setItem('bridge_session_id', res.session_id) } catch { /* ignore */ }
       subscribe()
       // 加载已保存的用户偏好
       await loadPreferences()
@@ -175,11 +177,19 @@ export const useSessionStore = defineStore('session', () => {
         speakingText.value = (d.text as string) ?? ''
         transcript.value = (d.text as string) ?? ''
         transcriptSpeaker.value = 'assistant'
+        // TTS 异步化：speak 事件可能不含音频（audio_url 为 null），
+        // 音频稍后通过 digital_human.audio_ready 事件推送
         speakingAudioUrl.value = (d.audio_url as string) ?? null
         speakingSpeed.value = (d.speed as number) ?? 1.0
         needRepeat.value = (d.repeat as boolean) ?? false
         speakingGesture.value = (d.gesture as string) ?? 'idle'
         speakingExpression.value = (d.expression as string) ?? 'neutral'
+        break
+      case 'digital_human.audio_ready':
+        // 异步 TTS 音频就绪：更新 audio_url，DigitalHuman 组件会 watch 到变化并播放
+        if (speaking.value) {
+          speakingAudioUrl.value = (d.audio_url as string) ?? null
+        }
         break
       case 'widget.show': {
         // 按 widget_id 去重：同 ID 的 widget 替换而非追加，避免重复展示
@@ -329,6 +339,46 @@ export const useSessionStore = defineStore('session', () => {
       }
     } catch {
       // 偏好加载失败不阻断流程
+    }
+  }
+
+  // 恢复已有会话（刷新页面后自动恢复，无需重新创建）
+  async function restoreSession(): Promise<boolean> {
+    let savedId: string | null = null
+    try { savedId = localStorage.getItem('bridge_session_id') } catch { /* ignore */ }
+    if (!savedId) return false
+    try {
+      // 验证会话是否有效
+      const session = await api.getSession(savedId)
+      if (!session || session.status === 'closed') {
+        try { localStorage.removeItem('bridge_session_id') } catch { /* ignore */ }
+        return false
+      }
+      // 恢复状态
+      sessionId.value = savedId
+      mode.value = (session.mode as Mode) || mode.value
+      scene.value = (session.scene as Scene) || scene.value
+      status.value = 'connected'
+      // 加载消息历史
+      try {
+        const history = await api.getMessages(savedId)
+        messages.value = history.map((m) => ({
+          id: m.id,
+          session_id: m.session_id,
+          role: m.role as Message['role'],
+          content: m.content,
+          speaker: m.speaker,
+          language: m.language,
+          message_type: m.message_type as Message['message_type'],
+        }))
+      } catch { /* 历史加载失败不阻断 */ }
+      subscribe()
+      await loadPreferences()
+      return true
+    } catch {
+      // 会话不存在或已失效，清除并返回 false
+      try { localStorage.removeItem('bridge_session_id') } catch { /* ignore */ }
+      return false
     }
   }
 

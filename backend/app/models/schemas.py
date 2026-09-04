@@ -34,7 +34,7 @@ class SessionOut(BaseModel):
 
 class MessageCreate(BaseModel):
     role: str = Field(default="user")
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=5000)
     speaker: str | None = None
     language: str = Field(default="zh")
     message_type: str = Field(default="text")

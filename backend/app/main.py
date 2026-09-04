@@ -30,8 +30,17 @@ async def lifespan(_app: FastAPI):
     await init_db()
     logger.info("数据库初始化完成")
 
+    # 知识库索引 + 热加载监控
+    from app.rag.store import get_vector_store
+    from app.rag.watcher import KnowledgeWatcher
+
+    vector_store = get_vector_store()
+    watcher = KnowledgeWatcher(vector_store)
+    await watcher.start()
+
     yield
 
+    await watcher.stop()
     logger.info("Bridge 后端关闭")
 
 

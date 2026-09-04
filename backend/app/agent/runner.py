@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -90,7 +91,7 @@ class AgentRunner:
             language="zh",
         )
 
-        # 5. message.completed + digital_human.speak
+        # 5. message.completed + digital_human.speak（先推送文本驱动嘴型，再异步合成音频）
         await event_bus.publish(
             sid,
             make_event(
@@ -103,8 +104,11 @@ class AgentRunner:
             ),
         )
         dh = get_digital_human_adapter()
-        speak = await dh.speak(reply, mode=session.mode)
-        await event_bus.publish(sid, make_event(EventType.DIGITAL_HUMAN_SPEAK, sid, 0, **speak))
+        # 先构造不含音频的 speak payload（快速推送，前端立即驱动嘴型/字幕）
+        speak_payload = await _build_speak_payload_without_audio(dh, reply, session.mode)
+        await event_bus.publish(sid, make_event(EventType.DIGITAL_HUMAN_SPEAK, sid, 0, **speak_payload))
+        # 异步合成音频，完成后推送 digital_human.audio_ready
+        asyncio.create_task(_synthesize_and_publish_audio(sid, dh, reply, speak_payload.get("speed", 1.0)))
 
         # 6. agent.completed
         duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -121,6 +125,46 @@ class AgentRunner:
         )
 
         await self.db.commit()
+
+
+async def _build_speak_payload_without_audio(dh, text: str, mode: str) -> dict:
+    """构造不含音频的 speak payload（复用适配器的情感/手势/语速推断逻辑）。
+
+    通过临时替换 TTS 为 No-op 实现，避免等待 2-3 秒的音频合成。
+    """
+    original_tts = dh._tts
+
+    class _NoopTTS:
+        async def synthesize(self, text, *, speed=1.0):
+            from app.adapters.tts import TTSResult
+            return TTSResult(audio=None, format="mp3", duration=0)
+
+    dh._tts = _NoopTTS()
+    try:
+        payload = await dh.speak(text, mode=mode)
+    finally:
+        dh._tts = original_tts
+    payload.pop("audio_url", None)
+    return payload
+
+
+async def _synthesize_and_publish_audio(session_id: str, dh, text: str, speed: float) -> None:
+    """异步合成音频并推送 digital_human.audio_ready 事件。"""
+    try:
+        audio_url = await dh.synthesize_audio(text, speed=speed)
+        if audio_url:
+            await event_bus.publish(
+                session_id,
+                make_event(
+                    EventType.DIGITAL_HUMAN_AUDIO_READY,
+                    session_id,
+                    0,
+                    audio_url=audio_url,
+                    text=text,
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("异步音频合成失败 session={}", session_id)
 
 
 # 兼容旧引用

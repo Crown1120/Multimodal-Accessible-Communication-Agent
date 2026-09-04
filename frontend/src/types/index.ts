@@ -22,6 +22,7 @@ export type EventType =
   | 'message.delta'
   | 'message.completed'
   | 'digital_human.speak'
+  | 'digital_human.audio_ready'
   | 'widget.show'
   | 'widget.update'
   | 'widget.close'

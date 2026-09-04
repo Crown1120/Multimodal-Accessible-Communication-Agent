@@ -77,6 +77,8 @@ class Settings(BaseSettings):
 
     # 会话
     session_timeout_minutes: int = 60
+    max_message_length: int = Field(default=2000, description="单条消息最大字符数，超出截断")
+    agent_timeout_seconds: int = Field(default=30, description="Agent 运行超时秒数")
     # 日志
     log_level: str = "INFO"
     log_file: str = "./logs/bridge.log"

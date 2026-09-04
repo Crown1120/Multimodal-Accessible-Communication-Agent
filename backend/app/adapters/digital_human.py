@@ -125,6 +125,16 @@ class MinimalDigitalHumanAdapter:
             payload["repeat"] = True
         return payload
 
+    async def synthesize_audio(self, text: str, *, speed: float = 1.0) -> str | None:
+        """仅合成音频，返回 base64 data URL（用于异步 TTS，先推送文本再推送音频）。"""
+        try:
+            tts_result = await self._tts.synthesize(text, speed=speed)
+            if tts_result.audio:
+                return "data:audio/mpeg;base64," + _to_b64(tts_result.audio)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("异步 TTS 合成失败：{}", e)
+        return None
+
     @staticmethod
     def _speed_for_mode(mode: str) -> float:
         if mode == "elderly":

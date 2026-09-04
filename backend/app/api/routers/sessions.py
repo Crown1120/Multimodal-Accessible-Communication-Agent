@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.asr import get_asr_adapter, get_asr_adapter_name
 from app.agent.runner import SimpleAgentRunner
+from app.core.config import settings
 from app.core.errors import AdapterError, ErrorCode
 from app.core.events import EventType, make_event, to_sse
 from app.core.logging import get_logger
@@ -78,11 +79,17 @@ async def send_message(
     repo = SessionRepository(db)
     await repo.get(session_id)  # 校验存在且未关闭
 
+    # 输入长度限制：超出截断并记录
+    content = payload.content
+    if len(content) > settings.max_message_length:
+        content = content[:settings.max_message_length]
+        logger.warning("消息超长截断 session={} original_len={}", session_id, len(payload.content))
+
     msg_repo = MessageRepository(db)
     message = await msg_repo.add(
         session_id=session_id,
         role=payload.role,
-        content=payload.content,
+        content=content,
         speaker=payload.speaker,
         language=payload.language,
         message_type=payload.message_type,
@@ -174,6 +181,10 @@ async def upload_audio(
 
     # 取最终文本（partial 可能为空串，回退到整体识别）
     final_text = partial_text.strip()
+    # ASR 结果长度限制
+    if len(final_text) > settings.max_message_length:
+        final_text = final_text[:settings.max_message_length]
+        logger.warning("ASR 结果超长截断 session={} original_len={}", session_id, len(partial_text))
     if not final_text:
         try:
             result = await asr.transcribe(audio_bytes, language=language)
@@ -234,7 +245,20 @@ async def _run_agent(session_id: str, user_text: str) -> None:
             repo = SessionRepository(task_db)
             session = await repo.get(session_id)
             runner = SimpleAgentRunner(task_db)
-            await runner.run(session, user_text)
+            try:
+                await asyncio.wait_for(runner.run(session, user_text), timeout=settings.agent_timeout_seconds)
+            except asyncio.TimeoutError:
+                logger.error("Agent 运行超时 session={} timeout={}s", session_id, settings.agent_timeout_seconds)
+                await event_bus.publish(
+                    session_id,
+                    make_event(
+                        EventType.ERROR,
+                        session_id,
+                        0,
+                        code="ERR_3002",
+                        message=f"处理超时（{settings.agent_timeout_seconds}秒），请简化问题后重试",
+                    ),
+                )
         except Exception:  # noqa: BLE001
             logger.exception("Agent 运行失败 session={}", session_id)
             await event_bus.publish(

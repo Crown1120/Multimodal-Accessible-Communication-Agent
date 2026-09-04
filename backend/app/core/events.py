@@ -35,6 +35,7 @@ class EventType(str, Enum):
 
     # 数字人
     DIGITAL_HUMAN_SPEAK = "digital_human.speak"
+    DIGITAL_HUMAN_AUDIO_READY = "digital_human.audio_ready"
 
     # Widget
     WIDGET_SHOW = "widget.show"
@@ -67,6 +68,7 @@ ToolFailedData = dict[str, Any]  # {"tool": str, "code": str, "message": str}
 MessageDeltaData = dict[str, Any]  # {"text": str, "role": str}
 MessageCompletedData = dict[str, Any]  # {"message_id": str, "role": str, "content": str}
 DigitalHumanSpeakData = dict[str, Any]  # {"text": str, "audio_url": str | None, "emotion": str | None}
+DigitalHumanAudioReadyData = dict[str, Any]  # {"audio_url": str, "text": str}
 WidgetShowData = dict[str, Any]  # {"widget_id": str, "widget_type": str, "payload": dict}
 WidgetUpdateData = dict[str, Any]  # {"widget_id": str, "payload": dict}
 WidgetCloseData = dict[str, Any]  # {"widget_id": str}

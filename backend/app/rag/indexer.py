@@ -69,6 +69,9 @@ async def index_knowledge(store: VectorStore, knowledge_dir: Path | None = None)
         scene = _infer_scene(md.name)
         text = md.read_text(encoding="utf-8")
         for title, body in _split_by_headers(text):
+            # 跳过只有标题、没有实质内容的块（如文件开头的 "# 标题" 概述）
+            if _is_noise_body(body):
+                continue
             doc_id = hashlib.md5(f"{md.name}:{title}".encode()).hexdigest()
             full = f"{title}\n{body}"
             docs.append(
@@ -88,3 +91,11 @@ async def index_knowledge(store: VectorStore, knowledge_dir: Path | None = None)
     await store.add(docs)
     logger.info("知识库索引完成：{} 个文档块", len(docs))
     return len(docs)
+
+
+def _is_noise_body(body: str) -> bool:
+    """正文是否只有标题（无实质内容）。"""
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    if not lines:
+        return True
+    return all(ln.startswith("#") for ln in lines)

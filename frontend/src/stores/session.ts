@@ -28,6 +28,7 @@ export const useSessionStore = defineStore('session', () => {
   const widgets = ref<WidgetData[]>([])
   const recording = ref<boolean>(false) // 是否正在录音
   const lastError = ref<string>('') // 最近错误提示
+  const asrAdapter = ref<string>('') // 当前实际使用的ASR适配器（豆包大模型/Whisper离线/Vosk离线/演示模式）
 
   // 独立无障碍偏好（可手动调整，随模式联动但有独立覆盖）
   const fontSize = ref<'small' | 'medium' | 'large'>('medium')
@@ -231,6 +232,8 @@ export const useSessionStore = defineStore('session', () => {
       const res = await api.uploadAudio(sessionId.value, audio, { speaker })
       if (!res.ok) {
         lastError.value = '语音识别失败，请重试或使用文字输入'
+      } else if (res.asr_adapter) {
+        asrAdapter.value = res.asr_adapter
       }
     } catch {
       lastError.value = '音频上传失败，请检查网络后重试'
@@ -362,6 +365,7 @@ export const useSessionStore = defineStore('session', () => {
     speakingExpression.value = 'neutral'
     recording.value = false
     lastError.value = ''
+    asrAdapter.value = ''
     widgets.value = []
     fontSize.value = 'medium'
     speechRate.value = 'normal'
@@ -391,6 +395,7 @@ export const useSessionStore = defineStore('session', () => {
     widgets,
     recording,
     lastError,
+    asrAdapter,
     fontSize,
     speechRate,
     highContrast,

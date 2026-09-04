@@ -1,15 +1,12 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 
-import AgentStatus from '@/components/AgentStatus.vue'
 import AudioInput from '@/components/AudioInput.vue'
+import BIcon from '@/components/BIcon.vue'
 import DigitalHuman from '@/components/DigitalHuman.vue'
 import InputBar from '@/components/InputBar.vue'
-import MessageList from '@/components/MessageList.vue'
 import ModeSwitcher from '@/components/ModeSwitcher.vue'
 import PreferencePanel from '@/components/PreferencePanel.vue'
-import SubtitleBar from '@/components/SubtitleBar.vue'
-import WidgetPanel from '@/components/WidgetPanel.vue'
 import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
@@ -29,44 +26,69 @@ onMounted(() => {
 async function start() {
   await store.createSession()
 }
+
+const sceneInfo = computed<{ label: string; icon: 'hospital' | 'government' }>(() =>
+  store.scene === 'government'
+    ? { label: '政务大厅', icon: 'government' }
+    : { label: '医院场景', icon: 'hospital' },
+)
+
+const statusInfo = computed(() => {
+  switch (store.status) {
+    case 'connected':
+      return { label: '已连接', icon: 'check' as const, cls: 'connected' }
+    case 'connecting':
+      return { label: '连接中…', icon: 'refresh' as const, cls: 'connecting' }
+    case 'error':
+      return { label: '连接异常', icon: 'alert' as const, cls: 'error' }
+    default:
+      return { label: '未连接', icon: 'wifi' as const, cls: 'offline' }
+  }
+})
 </script>
 
 <template>
   <div class="workbench">
     <header class="topbar">
       <div class="brand">
-        <span class="logo">🌉</span>
-        <span class="title">Bridge 无障碍沟通工作台</span>
-      </div>
-      <div class="status">
-        <span class="badge" :class="store.status">
-          {{ store.status === 'connected' ? '已连接' : store.status === 'connecting' ? '连接中…' : store.status === 'error' ? '连接异常' : '未连接' }}
+        <div class="brand-logo">
+          <BIcon name="bridge" :size="22" :stroke-width="2.1" />
+        </div>
+        <div class="brand-text">
+          <div class="brand-title">Bridge 无障碍沟通工作台</div>
+          <div class="brand-sub">多模态 · 实时沟通 · 无障碍服务</div>
+        </div>
+        <span class="scene-chip">
+          <BIcon :name="sceneInfo.icon" :size="15" />
+          {{ sceneInfo.label }}
         </span>
-        <span v-if="store.sessionId" class="session-id">{{ store.sessionId }}</span>
       </div>
-      <ModeSwitcher />
-      <PreferencePanel />
-      <button class="primary" v-if="!store.isConnected" @click="start">开始会话</button>
+
+      <div class="topbar-right">
+        <div class="conn" :class="statusInfo.cls" role="status">
+          <BIcon :name="statusInfo.icon" :size="15" />
+          <span>{{ statusInfo.label }}</span>
+        </div>
+        <span v-if="store.sessionId" class="session-id" :title="store.sessionId">
+          {{ store.sessionId.slice(0, 8) }}
+        </span>
+        <ModeSwitcher />
+        <PreferencePanel />
+        <button v-if="!store.isConnected" class="primary start-btn" @click="start">
+          开始会话
+        </button>
+      </div>
     </header>
 
     <main class="body">
-      <aside class="left">
+      <!-- 视频通话主画面：数字人居中，服务信息也收纳在数字人框内 -->
+      <section class="stage" aria-label="视频通话画面">
         <DigitalHuman />
-        <AgentStatus />
-      </aside>
-
-      <section class="center">
-        <SubtitleBar />
-        <MessageList />
-        <div class="input-area">
+        <div class="control-bar">
           <InputBar />
           <AudioInput />
         </div>
       </section>
-
-      <aside class="right">
-        <WidgetPanel />
-      </aside>
     </main>
   </div>
 </template>
@@ -76,84 +98,167 @@ async function start() {
   display: flex;
   flex-direction: column;
   height: 100%;
+  background:
+    radial-gradient(900px 400px at 12% -8%, rgba(43, 108, 255, 0.08), transparent 60%),
+    radial-gradient(900px 400px at 92% -6%, rgba(14, 165, 183, 0.1), transparent 60%),
+    var(--color-bg);
 }
+
+/* ===== 顶栏 ===== */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 12px 20px;
-  background: var(--color-surface);
+  gap: 14px;
+  height: var(--topbar-height);
+  padding: 0 20px;
+  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--color-border);
+  position: relative;
+  z-index: 20;
 }
+
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 600;
+  gap: 12px;
+  min-width: 0;
 }
-.logo {
-  font-size: 1.4em;
-}
-.title {
-  font-size: 1.05em;
-}
-.status {
+
+.brand-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--color-primary-gradient);
+  color: #fff;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  margin-right: 8px;
-  font-size: 0.85em;
+  justify-content: center;
+  box-shadow: var(--shadow-primary);
+  flex-shrink: 0;
 }
-.badge {
-  padding: 3px 10px;
-  border-radius: 999px;
-  background: var(--color-bg);
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.brand-title {
+  font-weight: 700;
+  font-size: 1.02em;
+  letter-spacing: 0.2px;
+}
+
+.brand-sub {
+  font-size: 0.74em;
   color: var(--color-text-muted);
 }
-.badge.connected {
+
+.scene-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
   background: var(--color-primary-soft);
   color: var(--color-primary);
+  font-size: 0.82em;
+  font-weight: 600;
+  white-space: nowrap;
+  margin-left: 4px;
 }
-.badge.connecting {
-  background: #fff4e0;
-  color: var(--color-warning);
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
-.badge.error {
-  background: #fde7e8;
-  color: var(--color-danger);
-}
-.session-id {
+
+.conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 0.85em;
+  font-weight: 600;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
   color: var(--color-text-muted);
-  font-family: ui-monospace, monospace;
 }
+.conn.connected {
+  color: var(--color-success);
+  background: var(--color-success-soft);
+  border-color: transparent;
+}
+.conn.connecting {
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+  border-color: transparent;
+}
+.conn.connecting .b-icon {
+  animation: spin 1s linear infinite;
+}
+.conn.error {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border-color: transparent;
+}
+
+.session-id {
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  padding: 3px 8px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 6px;
+}
+
+.start-btn {
+  padding: 8px 18px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ===== 主体：全屏视频通话画面 ===== */
 .body {
   flex: 1;
-  display: grid;
-  grid-template-columns: 240px 1fr 320px;
-  gap: 1px;
-  background: var(--color-border);
+  display: flex;
   min-height: 0;
+  padding: 14px 18px 18px;
 }
-.left,
-.center,
-.right {
-  background: var(--color-bg);
+
+.stage {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-.center {
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  position: relative;
 }
-.input-area {
+
+/* 视频通话控制条：输入 + 麦克风 */
+.control-bar {
   display: flex;
   align-items: stretch;
   gap: 0;
   border-top: 1px solid var(--color-border);
   background: var(--color-surface);
+  flex-shrink: 0;
 }
-.input-area > :first-child {
-  flex: 1;
+.control-bar > :deep(.input-bar) {
+  border-right: 1px solid var(--color-border);
 }
 </style>

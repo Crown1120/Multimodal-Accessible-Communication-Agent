@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import BIcon from '@/components/BIcon.vue'
 import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
@@ -23,75 +24,142 @@ const isRepeat = computed(() => store.needRepeat)
     aria-live="polite"
     aria-label="实时字幕"
   >
+    <div class="subtitle-head">
+      <span class="subtitle-title">
+        <BIcon name="captions" :size="16" />
+        实时字幕
+      </span>
+      <span class="subtitle-state" v-if="store.recording || store.speaking">
+        <span class="pulse-dot"></span>
+        {{ store.recording ? '识别中' : store.speaking ? '播报中' : '' }}
+      </span>
+    </div>
+
     <!-- 错误提示 -->
     <div class="error-banner" v-if="store.lastError" role="alert">
-      ⚠️ {{ store.lastError }}
+      <BIcon name="alert" :size="15" />
+      {{ store.lastError }}
     </div>
 
     <!-- 重复确认提示 -->
     <div class="repeat-banner" v-if="isRepeat" role="status">
-      🔔 重要信息，请确认
+      <BIcon name="bell" :size="15" />
+      重要信息，请确认
     </div>
 
     <!-- 字幕内容 -->
     <div class="subtitle-content" v-if="store.transcript">
-      <span class="speaker" v-if="speakerLabel">【{{ speakerLabel }}】</span>
+      <span class="speaker" v-if="speakerLabel">{{ speakerLabel }}</span>
       <span class="text">{{ store.transcript }}</span>
-      <span class="cursor" v-if="store.speaking || store.recording">▎</span>
+      <span class="cursor" v-if="store.speaking || store.recording">▍</span>
     </div>
 
     <!-- 占位提示 -->
     <div class="placeholder" v-else>
-      {{ store.recording ? '正在识别语音…' : '实时字幕将在此显示…' }}
+      <BIcon name="ear" :size="18" />
+      <span>{{ store.recording ? '正在识别语音…' : '实时字幕将在此显示…' }}</span>
     </div>
   </section>
 </template>
 
 <style scoped>
 .subtitle-bar {
-  min-height: 72px;
-  padding: 14px 18px;
-  background: var(--color-surface);
+  position: relative;
+  min-height: 96px;
+  margin: 14px 14px 0;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, var(--color-surface-2), var(--color-surface));
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  font-size: 1.15em;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  overflow: hidden;
 }
 
-/* 听障模式：高对比度、大字号 */
-.subtitle-bar.hearing {
-  font-size: 1.6em;
-  font-weight: 500;
-  border-width: 2px;
+.subtitle-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
-/* 老年模式：暖色背景、大字号 */
-.subtitle-bar.elderly {
-  font-size: 1.5em;
-  font-weight: 500;
+.subtitle-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82em;
+  font-weight: 600;
+  color: var(--color-text-muted);
 }
 
+.subtitle-title .b-icon {
+  color: var(--color-primary);
+}
+
+.subtitle-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78em;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+
+/* 字幕主体：核心内容，清晰放大 */
 .subtitle-content {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
   color: var(--color-text);
+  font-size: 1.28em;
+  line-height: 1.5;
+  font-weight: 500;
+  min-height: 1.5em;
 }
+
 .speaker {
-  color: var(--color-primary);
+  color: #fff;
+  background: var(--color-primary-gradient);
+  padding: 1px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 0.72em;
   font-weight: 600;
   white-space: nowrap;
+  flex-shrink: 0;
 }
+
 .text {
   flex: 1;
+  word-break: break-word;
 }
+
 .cursor {
   animation: blink 1s step-end infinite;
   color: var(--color-primary);
+  font-weight: 700;
 }
+
 @keyframes blink {
   0%,
   50% {
@@ -102,22 +170,51 @@ const isRepeat = computed(() => store.needRepeat)
     opacity: 0;
   }
 }
+
 .placeholder {
-  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-faint);
+  font-size: 0.98em;
+  min-height: 1.6em;
 }
+
+.error-banner,
+.repeat-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.88em;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+
 .error-banner {
   color: var(--color-danger);
-  font-size: 0.9em;
-  padding: 4px 8px;
-  background: rgba(229, 72, 77, 0.1);
-  border-radius: 6px;
+  background: var(--color-danger-soft);
 }
+
 .repeat-banner {
   color: var(--color-warning);
-  font-size: 0.9em;
-  font-weight: 600;
-  padding: 4px 8px;
-  background: rgba(245, 166, 35, 0.12);
-  border-radius: 6px;
+  background: var(--color-warning-soft);
+}
+
+/* 听障模式：字幕更大更醒目 */
+.subtitle-bar.hearing {
+  font-size: 1.5em;
+  border-width: 2px;
+  border-color: var(--color-primary);
+  background: var(--color-surface);
+}
+
+.subtitle-bar.hearing .subtitle-content {
+  font-size: 1.35em;
+}
+
+/* 老年模式：字幕放大 */
+.subtitle-bar.elderly .subtitle-content {
+  font-size: 1.4em;
 }
 </style>

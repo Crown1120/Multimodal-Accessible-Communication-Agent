@@ -1,13 +1,19 @@
 """ASR（语音转文字）适配器。
 
 - ASRAdapter：统一接口（整体转写 + 流式增量转写）
-- MockASRAdapter：规则式转写，便于无 API Key 时演示核心闭环
+- VolcFlashASRAdapter：豆包大模型极速版 HTTP ASR（云端高精度）
 - OpenAIASRAdapter：兼容 OpenAI Whisper API
+- WhisperASRAdapter：faster-whisper 离线高精度（small 约 244MB）
+- VoskASRAdapter：Vosk 离线中文小模型（40MB，兜底）
+- MockASRAdapter：规则式转写，便于无 API Key 时演示核心闭环
 
-外部服务不可用时降级到 Mock，保证闭环可演示。
+外部服务不可用时逐级降级，保证闭环可演示。
 """
 
 from __future__ import annotations
+
+import base64
+import uuid as _uuid
 
 import asyncio
 import re
@@ -359,43 +365,177 @@ class WhisperASRAdapter:
 
 
 _asr_adapter: ASRAdapter | None = None
+_asr_adapter_name: str = ""  # 当前实际使用的 ASR 适配器名称（前端用于显示精度来源）
+_volc_status: str = "unknown"  # unknown / ok / bad (403 资源未开通)
+
+
+def get_asr_adapter_name() -> str:
+    """返回当前实际 ASR 适配器的可读名称（如"豆包ASR"、"Whisper离线"、"Vosk离线"等）。"""
+    return _asr_adapter_name
+
+
+# ---- 豆包大模型极速版 HTTP ASR 适配器（火山引擎语音服务）----
+class VolcFlashASRAdapter(ASRAdapter):
+    """火山引擎「大模型录音文件识别极速版」HTTP 适配器。
+
+    控制台需开通：https://console.volcengine.com/speech/service/10035
+    资源 ID 默认为 volc.bigasr.auc_turbo；失败时自动降级到离线识别。
+    """
+
+    _ENDPOINT = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
+    _TIMEOUT = 120.0
+
+    def __init__(self) -> None:
+        if not settings.volc_asr_app_key:
+            raise AdapterError(ErrorCode.ADAPTER_ASR_FAILED, "VOLC_ASR_X_API_KEY not set")
+        self._api_key = settings.volc_asr_app_key
+        self._resource_id = settings.volc_asr_resource_id or "volc.bigasr.auc_turbo"
+        self._client = httpx.AsyncClient(timeout=self._TIMEOUT)
+
+    async def transcribe(self, audio_bytes, *, language="zh", sample_rate=None):
+        b64 = base64.b64encode(audio_bytes).decode("ascii")
+        uid = self._api_key[:16]
+        head = audio_bytes[:8] if len(audio_bytes) >= 8 else b""
+        if head.startswith(b"RIFF"):
+            fmt, codec = "wav", "raw"
+        elif head[:4] == b"OggS":
+            fmt, codec = "ogg", "opus"
+        else:
+            fmt, codec = "ogg", "opus"
+        payload = {
+            "user": {"uid": uid},
+            "audio": {
+                "data": b64,
+                "format": fmt,
+                "codec": codec,
+                "rate": sample_rate or 16000,
+                "bits": 16,
+                "channel": 1,
+            },
+            "request": {
+                "model_name": "bigmodel",
+                "enable_itn": True,
+                "enable_punc": True,
+                "enable_ddc": False,
+            },
+        }
+        headers = {
+            "X-Api-Key": self._api_key,
+            "X-Api-Resource-Id": self._resource_id,
+            "X-Api-Request-Id": str(_uuid.uuid4()),
+            "X-Api-Sequence": "-1",
+        }
+        try:
+            resp = await self._client.post(self._ENDPOINT, json=payload, headers=headers)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "timeout" in msg or "401" in msg or "403" in msg or "auth" in msg:
+                VolcFlashASRAdapter._mark_volc_unavailable()
+            raise AdapterError(ErrorCode.ADAPTER_ASR_FAILED, f"ASR network failed") from exc
+        if resp.status_code != 200:
+            if resp.status_code in (401, 403):
+                VolcFlashASRAdapter._mark_volc_unavailable()
+            raise AdapterError(
+                ErrorCode.ADAPTER_ASR_FAILED,
+                f"ASR HTTP {resp.status_code}: {resp.text[:200]}",
+            )
+        data = resp.json()
+        code = data.get("code") or data.get("StatusCode") or 0
+        if code and str(code) not in ("0", "20000000"):
+            m = data.get("message") or data.get("StatusMessage") or ""
+            if str(code) == "45000030" or "not granted" in m or "resource" in m.lower():
+                VolcFlashASRAdapter._mark_volc_unavailable()
+            raise AdapterError(
+                ErrorCode.ADAPTER_ASR_FAILED, f"ASR err code={code} msg={m}"
+            )
+        text = ""
+        global _volc_status
+        try:
+            text = data["result"]["text"].strip()
+        except Exception:
+            utts = (data.get("result") or {}).get("utterances") or []
+            if utts:
+                text = utts[0].get("text", "").strip()
+        import re as _re
+
+        text = _re.sub(r"([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", r"\1", text)
+        _volc_status = "ok"
+        logger.info("豆包ASR返回：{}", text)
+        return ASRResult(text or "", language=language or "zh", confidence=0.95)
+
+    @staticmethod
+    def _mark_volc_unavailable() -> None:
+        """标记豆包 ASR 不可用并清空缓存，下次请求自动走离线 Whisper/Vosk。"""
+        global _volc_status, _asr_adapter
+        if _volc_status == "bad":
+            return
+        _volc_status = "bad"
+        _asr_adapter = None
+        logger.warning("豆包 ASR 资源未开通或鉴权失败，已自动降级到离线识别")
+
+    async def stream_transcribe(self, audio: bytes, *, language: str = "zh"):
+        # 豆包 HTTP 极速版不支持原生流式，先整体识别再切片输出（模拟流式）
+        result = await self.transcribe(audio, language=language)
+        import re as _re_mod
+
+        tokens = _re_mod.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9]+|[，。、！？]", result.text)
+        if not tokens and result.text:
+            tokens = [result.text]
+        for tk in tokens:
+            yield tk
+        yield ""
 
 
 def get_asr_adapter() -> ASRAdapter:
     """根据配置返回适配器（缓存单例，避免重复初始化）。
 
-    优先级：OpenAI API > Vosk > Whisper > Mock
-    （Whisper 需从 HuggingFace 下载，国内可能不可用）
+    优先级：豆包大模型ASR > OpenAI API > Whisper（高精度离线） > Vosk（兜底） > Mock
+    （Whisper 首次需下载 small 模型约 244MB，国内环境可用）
     """
-    global _asr_adapter
+    global _asr_adapter, _asr_adapter_name, _volc_status
     if _asr_adapter is not None:
         return _asr_adapter
 
-    # 1. 优先使用 OpenAI API（如果配置了 Key）
+    # 1. 豆包大模型极速版 HTTP ASR（配置 VOLC_ASR_X_API_KEY 即启用，_volc_status=bad 时自动跳过）
+    if settings.volc_asr_app_key and _volc_status != "bad":
+        try:
+            _asr_adapter = VolcFlashASRAdapter()
+            _asr_adapter_name = "豆包大模型"
+            logger.info("使用 豆包大模型极速版 HTTP ASR 适配器")
+            return _asr_adapter
+        except Exception as e:  # noqa: BLE001
+            logger.warning("豆包ASR初始化失败：{}", e)
+            _volc_status = "bad"
+
+    # 2. OpenAI Whisper 兼容 API
     if settings.asr_api_key:
         try:
             _asr_adapter = OpenAIASRAdapter()
+            _asr_adapter_name = "OpenAI Whisper"
             logger.info("使用 OpenAI ASR 适配器")
             return _asr_adapter
         except Exception as e:  # noqa: BLE001
             logger.warning("ASR 适配器初始化失败：{}", e)
 
-    # 2. 优先使用 Vosk 离线识别（国内可用，无需联网）
-    try:
-        _asr_adapter = VoskASRAdapter()
-        logger.info("使用 Vosk 离线 ASR 适配器")
-        return _asr_adapter
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Vosk 不可用：{}", e)
-
-    # 3. 尝试 faster-whisper（需从 HuggingFace 下载，国内可能不可用）
+    # 3. faster-whisper 离线识别（Whisper 架构，精度远超 Vosk 小模型）
     try:
         _asr_adapter = WhisperASRAdapter()
-        logger.info("使用 Whisper ASR 适配器")
+        _asr_adapter_name = "Whisper 离线"
+        logger.info("使用 Whisper 离线 ASR 适配器（高精度）")
         return _asr_adapter
     except Exception as e:  # noqa: BLE001
         logger.warning("Whisper 不可用：{}", e)
 
-    # 4. 最后回退到 Mock
+    # 4. Vosk 离线识别（40MB 中文小模型，国内可用，精度较低 — 仅作兜底）
+    try:
+        _asr_adapter = VoskASRAdapter()
+        _asr_adapter_name = "Vosk 离线"
+        logger.info("使用 Vosk 离线 ASR 适配器（兜底）")
+        return _asr_adapter
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Vosk 不可用：{}", e)
+
+    # 5. 最后回退到 Mock
     _asr_adapter = MockASRAdapter()
+    _asr_adapter_name = "演示模式(Mock)"
     return _asr_adapter

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { ref } from 'vue'
 
+import BIcon from '@/components/BIcon.vue'
 import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
@@ -8,95 +9,7 @@ const store = useSessionStore()
 const error = ref<string>('')
 const interimText = ref<string>('')
 
-// ---- 浏览器原生语音识别（Web Speech API）----
-// 优先使用：无需 API Key，实时识别真实语音
-// 注意：仅在安全源（localhost 或 HTTPS）下可用
-const SpeechRecognitionCtor =
-  (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-const recognition = ref<any>(null)
-
-function isSecureOrigin(): boolean {
-  return (
-    location.hostname === 'localhost' ||
-    location.hostname === '127.0.0.1' ||
-    location.protocol === 'https:'
-  )
-}
-
-function isWebSpeechAvailable(): boolean {
-  return !!SpeechRecognitionCtor && isSecureOrigin()
-}
-
-function startWebSpeech() {
-  if (!store.sessionId || store.recording) return
-  error.value = ''
-  interimText.value = ''
-
-  const rec = new SpeechRecognitionCtor()
-  rec.lang = 'zh-CN'
-  rec.continuous = false
-  rec.interimResults = true
-
-  rec.onresult = (event: any) => {
-    let interim = ''
-    let finalText = ''
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = event.results[i][0].transcript
-      if (event.results[i].isFinal) {
-        finalText += transcript
-      } else {
-        interim += transcript
-      }
-    }
-    // 实时增量字幕
-    interimText.value = interim
-    store.transcript = interim || finalText
-    store.transcriptSpeaker = 'staff'
-
-    if (finalText) {
-      // 识别完成：推送为用户消息并触发 Agent
-      store.transcript = ''
-      store.transcriptSpeaker = ''
-      interimText.value = ''
-      store.sendMessage(finalText.trim())
-    }
-  }
-
-  rec.onerror = (e: any) => {
-    store.recording = false
-    if (e.error === 'no-speech') {
-      error.value = '未检测到语音，请重试'
-    } else if (e.error === 'not-allowed') {
-      error.value = '麦克风权限被拒绝，请在浏览器设置中允许'
-    } else if (e.error === 'network' || e.error === 'service-not-allowed') {
-      // Web Speech 不可用，回退到 MediaRecorder + 后端 ASR
-      error.value = '浏览器语音识别不可用，正在切换到录音上传模式…'
-      startRecording()
-    } else {
-      // 其他错误也回退
-      error.value = `语音识别失败，正在切换到录音模式…`
-      startRecording()
-    }
-  }
-
-  rec.onend = () => {
-    store.recording = false
-    interimText.value = ''
-    store.transcript = ''
-    store.transcriptSpeaker = ''
-  }
-
-  rec.start()
-  recognition.value = rec
-  store.recording = true
-}
-
-function stopWebSpeech() {
-  recognition.value?.stop()
-  store.recording = false
-}
-
-// ---- 回退：MediaRecorder + 后端 ASR 上传 ----
+// ---- 录音上传 + 后端 ASR（MediaRecorder）----
 const mediaRecorder = ref<MediaRecorder | null>(null)
 const chunks = ref<Blob[]>([])
 
@@ -158,9 +71,7 @@ function stop() {
   stopRecording()
 }
 
-onUnmounted(() => {
-  recognition.value?.stop()
-})
+const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]
 </script>
 
 <template>
@@ -171,13 +82,18 @@ onUnmounted(() => {
       :disabled="!store.sessionId"
       @click="store.recording ? stop() : start()"
       :aria-pressed="store.recording"
+      :title="store.recording ? '停止录音' : '开始说话'"
     >
-      <span class="icon">{{ store.recording ? '⏹' : '🎤' }}</span>
+      <span class="wave" v-if="store.recording" aria-hidden="true">
+        <i v-for="(h, i) in waveBars" :key="i" :style="{ height: `${h * 100}%` }"></i>
+      </span>
+      <span class="icon" v-else>
+        <BIcon name="mic" :size="20" />
+      </span>
       <span class="label">{{ store.recording ? '停止' : '说话' }}</span>
     </button>
-    <div class="hint" v-if="store.recording && interimText">
-      {{ interimText }}
-    </div>
+
+    <div class="hint" v-if="store.recording && interimText">{{ interimText }}</div>
     <div class="hint" v-else-if="store.recording">正在聆听…</div>
     <div class="error" v-if="error" role="alert">{{ error }}</div>
   </section>
@@ -188,42 +104,87 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 8px;
+  padding: 12px 16px 14px;
+  min-width: 132px;
 }
+
 .mic {
   display: flex;
   align-items: center;
-  gap: 6px;
-  border-radius: 999px;
-  padding: 10px 18px;
+  gap: 8px;
+  border-radius: var(--radius-pill);
+  padding: 9px 20px;
   font-size: 1em;
+  font-weight: 600;
+  border: 1.5px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-xs);
 }
-.mic .icon {
-  font-size: 1.2em;
+.mic:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
 }
 .mic.recording {
   background: var(--color-danger);
   color: #fff;
   border-color: var(--color-danger);
-  animation: recordPulse 1.2s ease-in-out infinite;
+  animation: recordPulse 1.4s ease-in-out infinite;
 }
 @keyframes recordPulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.4);
+    box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.45);
   }
   50% {
-    box-shadow: 0 0 0 8px rgba(229, 72, 77, 0);
+    box-shadow: 0 0 0 10px rgba(229, 72, 77, 0);
   }
 }
+
+/* 录音波形 */
+.wave {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+}
+.wave i {
+  display: block;
+  width: 3px;
+  border-radius: 2px;
+  background: currentColor;
+  animation: wave 0.9s ease-in-out infinite;
+}
+.wave i:nth-child(2n) {
+  animation-delay: 0.15s;
+}
+.wave i:nth-child(3n) {
+  animation-delay: 0.3s;
+}
+@keyframes wave {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
 .hint {
   color: var(--color-text-muted);
-  font-size: 0.85em;
+  font-size: 0.84em;
   min-height: 1.2em;
+  text-align: center;
+  max-width: 220px;
 }
+
 .error {
   color: var(--color-danger);
-  font-size: 0.85em;
+  font-size: 0.82em;
+  text-align: center;
+  max-width: 220px;
 }
 </style>

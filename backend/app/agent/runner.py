@@ -44,6 +44,10 @@ class AgentRunner:
             make_event(EventType.AGENT_STARTED, sid, 0, run_id=run.id, intent=None),
         )
 
+        # 提前提交：释放 SQLite 写锁。否则后续 LLM 调用（可达数秒）期间会一直
+        # 持有未提交的写事务，导致并发创建会话/发消息时 database is locked。
+        await self.db.commit()
+
         # 2. 取历史（排除当前用户消息）
         history_orm = await session_repo.list_messages(sid)
         history = [

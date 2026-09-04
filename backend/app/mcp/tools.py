@@ -12,19 +12,22 @@ from app.mcp.registry import Tool, registry
 
 # 医院/政务地点模拟数据
 _HOSPITAL_LOCATIONS: dict[str, dict] = {
-    "骨科": {"floor": 2, "area": "外科区", "direction": "东侧", "coord": [121.4737, 31.2304]},
-    "内科": {"floor": 1, "area": "门诊大厅", "direction": "北侧", "coord": [121.4736, 31.2305]},
-    "儿科": {"floor": 1, "area": "东区", "direction": "东侧", "coord": [121.4740, 31.2306]},
-    "急诊": {"floor": 1, "area": "西侧", "direction": "西侧", "coord": [121.4730, 31.2303]},
-    "妇产科": {"floor": 3, "area": "门诊", "direction": "中部", "coord": [121.4738, 31.2307]},
-    "挂号": {"floor": 1, "area": "大厅", "direction": "中部", "coord": [121.4737, 31.2304]},
-    "服务台": {"floor": 1, "area": "总服务台", "direction": "入口", "coord": [121.4735, 31.2302]},
+    "骨科": {"floor": 2, "area": "外科区", "direction": "东侧", "coord": [121.4739, 31.2303]},
+    "内科": {"floor": 1, "area": "门诊大厅", "direction": "北侧", "coord": [121.4734, 31.2308]},
+    "儿科": {"floor": 1, "area": "东区", "direction": "东侧", "coord": [121.4742, 31.2308]},
+    "急诊": {"floor": 1, "area": "西侧", "direction": "西侧", "coord": [121.4728, 31.2306]},
+    "妇产科": {"floor": 3, "area": "门诊", "direction": "中部", "coord": [121.4738, 31.2300]},
+    "挂号": {"floor": 1, "area": "大厅", "direction": "中部", "coord": [121.4736, 31.2304]},
+    "服务台": {"floor": 1, "area": "总服务台", "direction": "入口", "coord": [121.4732, 31.2302]},
 }
 _GOVERNMENT_LOCATIONS: dict[str, dict] = {
     "户籍": {"floor": 1, "area": "户籍窗口", "direction": "A 区", "coord": [121.4900, 31.2400]},
     "社保": {"floor": 1, "area": "社保窗口", "direction": "B 区", "coord": [121.4902, 31.2401]},
     "公积金": {"floor": 1, "area": "公积金窗口", "direction": "C 区", "coord": [121.4904, 31.2402]},
 }
+
+# 起点（大厅入口）坐标
+_ORIGIN_COORD = [121.4730, 31.2303]
 
 # 翻译词典（演示用）
 _TRANSLATE_DICT = {
@@ -89,12 +92,24 @@ class RouteQueryTool(Tool):
             f"向 {direction} 前行约 50 米",
             f"到达 {destination}（{dest_info['area']}）",
         ]
+        # 生成示意路线折线（起点 → 大厅中轴 → 电梯 → 目的地）
+        ox, oy = _ORIGIN_COORD
+        dx, dy = dest_info["coord"]
+        midx, midy = (ox + dx) / 2, (oy + dy) / 2
+        path = [_ORIGIN_COORD, [midx, oy], [midx, midy], [midx, dy], dest_info["coord"]]
+        pois = [
+            {"name": k, "coord": v["coord"], "floor": v["floor"]}
+            for k, v in table.items()
+        ]
         payload = {
             "origin": origin,
             "destination": destination,
             "steps": steps,
             "floor": floor,
-            "coord": dest_info["coord"],
+            "origin_coord": _ORIGIN_COORD,
+            "dest_coord": dest_info["coord"],
+            "path": path,
+            "pois": pois,
         }
         return {"tool": self.name, "result": payload, "widget": {"widget_type": "map_route", "payload": payload}}
 

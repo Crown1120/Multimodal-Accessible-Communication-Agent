@@ -74,6 +74,7 @@ class AudioTranscribeResponse(BaseModel):
     text: str
     message_id: str | None = None
     ok: bool = True
+    asr_adapter: str | None = None  # 当前实际使用的 ASR 适配器，便于前端提示精度
 
 
 class PreferenceSave(BaseModel):

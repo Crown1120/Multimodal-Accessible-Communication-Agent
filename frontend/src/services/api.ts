@@ -33,6 +33,7 @@ export interface AudioTranscribeResult {
   text: string
   message_id?: string
   ok: boolean
+  asr_adapter?: string | null
 }
 
 export const api = {

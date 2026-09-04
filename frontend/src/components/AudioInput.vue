@@ -61,22 +61,14 @@ function stopRecording() {
   store.recording = false
 }
 
-// 统一入口：直接使用录音上传 + 后端 Vosk 离线识别
-// （Web Speech API 需要连接 Google 服务器，国内不可用）
+// 统一入口：直接使用录音上传 + 后端 ASR 识别
+// （Web Speech API 需要连接 Google 服务器，国内不可用，已移除）
 function start() {
-  if (isWebSpeechAvailable()) {
-    startWebSpeech()
-  } else {
-    startRecording()
-  }
+  startRecording()
 }
 
 function stop() {
-  if (recognition.value) {
-    stopWebSpeech()
-  } else {
-    stopRecording()
-  }
+  stopRecording()
 }
 
 const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]

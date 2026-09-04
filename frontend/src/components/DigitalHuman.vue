@@ -121,6 +121,7 @@ async function initXingyun() {
       })
     }
     xingyunReady.value = true
+    ensureXingyunMuted()
   } catch (error) {
     const msg = error instanceof Error ? error.message : '星云数字人初始化失败'
     xingyunError.value = msg
@@ -133,8 +134,39 @@ async function initXingyun() {
 
 function speakWithXingyun(text: string): boolean {
   if (!xingyunReady.value || !xingyunAvatar || xingyunError.value || !text) return false
-  xingyunAvatar.speak(`<speak>${escapeSsml(text)}</speak>`)
+  xingyunAvatar.speak(buildSsml(text, 1.0))
   return true
+}
+
+// 构造带语速的 SSML（rate 为百分比，100=原速）
+function buildSsml(text: string, speed: number): string {
+  // 纯 SSML（不含 prosody），确保 SDK 正常驱动嘴型与肢体动作
+  return `<speak>${escapeSsml(text)}</speak>`
+}
+
+// 静音星云 SDK 自身的音频输出（避免与后端 TTS 音频重叠），仅保留嘴型/动作驱动
+let xingyunMuteObserver: MutationObserver | null = null
+function ensureXingyunMuted() {
+  const container = document.getElementById('xingyun-avatar-container')
+  if (!container || xingyunMuteObserver) return
+  const mute = (el: Element) => {
+    if (el instanceof HTMLMediaElement) {
+      el.muted = true
+      el.volume = 0
+    }
+  }
+  container.querySelectorAll('audio, video').forEach(mute)
+  xingyunMuteObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      m.addedNodes.forEach((node) => {
+        if (node instanceof Element) {
+          mute(node)
+          node.querySelectorAll('audio, video').forEach(mute)
+        }
+      })
+    }
+  })
+  xingyunMuteObserver.observe(container, { childList: true, subtree: true })
 }
 
 // 监听播报事件
@@ -142,13 +174,22 @@ watch(
   () => store.speaking,
   (isSpeaking) => {
     if (isSpeaking && store.speakingText) {
-      // 优先：后端返回的音频 URL；其次：星云 3D 数字人播报；兜底：浏览器原生 TTS
+      const speed = store.speakingSpeed || 1.0
       if (store.speakingAudioUrl && audioEl.value) {
+        // 后端 TTS 音频负责发声；同时调用星云 SDK speak() 驱动嘴型与肢体动作（SDK 音频已静音）
+        if (xingyunReady.value && xingyunAvatar && !xingyunError.value) {
+          try {
+            xingyunAvatar.speak(buildSsml(store.speakingText, speed))
+          } catch (e) {
+            console.warn('[Xingyun] lip-sync speak failed:', e)
+          }
+        }
         audioEl.value.src = store.speakingAudioUrl
-        audioEl.value.playbackRate = store.speakingSpeed || 1.0
+        audioEl.value.playbackRate = speed
         audioEl.value.play().catch(() => {})
       } else if (!speakWithXingyun(store.speakingText)) {
-        speakWithBrowser(store.speakingText, store.speakingSpeed || 1.0)
+        // 无后端音频时：星云 SDK 播报（发声+嘴型），兜底浏览器 TTS
+        speakWithBrowser(store.speakingText, speed)
       }
     }
   },
@@ -240,11 +281,15 @@ watch(
         </div>
       </div>
 
+      
+
       <!-- 重要信息确认提示（仅关键信息时出现） -->
       <div class="repeat-hint" v-if="store.needRepeat">
         <BIcon name="bell" :size="14" />
         重要信息，请注意确认
       </div>
+
+      
 
       <!-- 服务信息：收纳在数字人画面右下方（只展示地点/路线等有用信息） -->
       <div class="widget-dock" v-if="store.widgets.some((w) => w.widget_type !== 'knowledge_source')">
@@ -365,11 +410,12 @@ watch(
   background: rgba(239, 68, 68, 0.18);
 }
 
+/* ===== 降级兜底字幕（仅星云不可用时显示，就绪时用 SDK 自带字幕） ===== */
 /* ===== 重要信息确认提示（画面底部居中，仅关键信息时出现） ===== */
 .repeat-hint {
   position: absolute;
   left: 50%;
-  bottom: 24px;
+  bottom: 58px;
   transform: translateX(-50%);
   z-index: 6;
   display: inline-flex;
@@ -430,6 +476,17 @@ watch(
   background: rgba(0, 0, 0, 0.55);
   border-radius: var(--radius-pill);
   backdrop-filter: blur(4px);
+}
+
+/* ===== 数字人画面内字幕 ===== */
+.dh-subtitle.hearing {
+  font-size: 1.28em;
+  font-weight: 600;
+  max-width: calc(100% - 380px);
+}
+.dh-subtitle.elderly {
+  font-size: 1.15em;
+  font-weight: 600;
 }
 
 .gesture-label {

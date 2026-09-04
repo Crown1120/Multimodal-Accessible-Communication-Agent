@@ -1,9 +1,39 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
 .pytest_cache/
+
+# 数据与运行时
 data/
 logs/
 chroma/
-*.egg-info/
+chroma_data/
+*.db
+*.db-shm
+*.db-wal
+*.wav
+*.mp3
+
+# 大模型文件（Vosk 等，运行时按需下载）
+models/
+
+# 测试
+tests/
+
+# 环境变量
 .env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+
+# 临时文件
+*.tmp
+*.bak
+fix_avatar.js
+test_*.py

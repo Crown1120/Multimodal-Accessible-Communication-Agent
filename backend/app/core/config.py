@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     # 数据库
     sqlite_url: str = "sqlite+aiosqlite:///./bridge.db"
     sqlite_echo: bool = False
+    # PostgreSQL（可选，设置后优先使用；格式：postgresql+asyncpg://user:pass@host:5432/dbname）
+    postgres_url: str = Field(default="", description="PostgreSQL 连接串，为空时使用 SQLite")
 
     # 向量库
     chroma_path: str = "./chroma_data"

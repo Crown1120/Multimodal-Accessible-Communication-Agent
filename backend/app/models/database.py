@@ -27,15 +27,27 @@ class Base(DeclarativeBase):
     """所有 ORM 模型的基类。"""
 
 
-_is_memory = ":memory:" in settings.sqlite_url
+# 数据库选择：优先 PostgreSQL，其次 SQLite
+_use_postgres = bool(settings.postgres_url)
+_is_memory = (not _use_postgres) and (":memory:" in settings.sqlite_url)
 
-engine = create_async_engine(
-    settings.sqlite_url,
-    echo=settings.sqlite_echo,
-    future=True,
-    connect_args={"check_same_thread": False} if _is_memory else {},
-    poolclass=StaticPool if _is_memory else None,
-)
+if _use_postgres:
+    engine = create_async_engine(
+        settings.postgres_url,
+        echo=settings.sqlite_echo,
+        future=True,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+    )
+else:
+    engine = create_async_engine(
+        settings.sqlite_url,
+        echo=settings.sqlite_echo,
+        future=True,
+        connect_args={"check_same_thread": False} if _is_memory else {},
+        poolclass=StaticPool if _is_memory else None,
+    )
 
 
 def _set_sqlite_pragma(dbapi_connection, _record) -> None:
@@ -44,7 +56,7 @@ def _set_sqlite_pragma(dbapi_connection, _record) -> None:
     busy_timeout 是 SQLite 的每连接设置，只在 init_db 里设置一次不会对
     后续连接生效，并发写会立即报 "database is locked"。
     """
-    if _is_memory:
+    if _use_postgres or _is_memory:
         return
     try:
         cursor = dbapi_connection.cursor()
@@ -76,7 +88,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # 启用 WAL 模式，解决并发读写导致的 "database is locked"
-        if not _is_memory:
+        if not _use_postgres and not _is_memory:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
             await conn.execute(text("PRAGMA busy_timeout=5000"))
     logger.info("数据表已就绪")

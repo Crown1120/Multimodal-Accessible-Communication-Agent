@@ -34,11 +34,11 @@ def _check_adapters() -> list[AdapterStatus]:
         available=True,
         mode="real" if settings.llm_api_key else "mock",
     ))
-    # ASR
+    # ASR（火山豆包 ASR 或 OpenAI Whisper，任一配置即真实识别）
     result.append(AdapterStatus(
         name="asr",
         available=True,
-        mode="real" if settings.asr_api_key else "mock",
+        mode="real" if (settings.volc_asr_app_key or settings.asr_api_key) else "mock",
     ))
     # TTS
     result.append(AdapterStatus(

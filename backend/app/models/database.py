@@ -37,6 +37,29 @@ engine = create_async_engine(
     poolclass=StaticPool if _is_memory else None,
 )
 
+
+def _set_sqlite_pragma(dbapi_connection, _record) -> None:
+    """每条新连接都启用 WAL 与 busy_timeout，避免并发写时 database is locked。
+
+    busy_timeout 是 SQLite 的每连接设置，只在 init_db 里设置一次不会对
+    后续连接生效，并发写会立即报 "database is locked"。
+    """
+    if _is_memory:
+        return
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+    except Exception:  # noqa: BLE001
+        logger.warning("设置 SQLite 连接参数失败", exc_info=True)
+
+
+from sqlalchemy import event  # noqa: E402
+
+event.listen(engine.sync_engine, "connect", _set_sqlite_pragma)
+
 async_session_factory = async_sessionmaker(
     engine,
     class_=AsyncSession,

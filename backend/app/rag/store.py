@@ -148,11 +148,17 @@ class ChromaVectorStore:
 
 
 def get_vector_store() -> VectorStore:
-    """优先使用 Chroma；不可用时回退到内存向量存储。"""
-    try:
-        import chromadb  # noqa: F401
+    """默认使用进程内中文 n-gram 向量存储（确定、可靠、无外部模型依赖）。
 
+    Chroma 默认 embedding 对本项目中文语料会产生退化向量（所有文档几乎同向量，
+    检索结果与查询无关），因此不再默认启用；仅当通过 settings 显式配置了
+    可用 embedding 时才考虑 Chroma。
+    """
+    try:
+        chroma_ef = settings.chroma_embedding  # 若配置了有效 embedding 才用 Chroma
+        if not chroma_ef:
+            raise RuntimeError("未配置 Chroma embedding，使用内存向量存储")
         return ChromaVectorStore()
     except Exception as e:  # noqa: BLE001
-        logger.warning("Chroma 不可用，回退到内存向量存储：{}", e)
+        logger.warning("使用内存向量存储（中文 n-gram）：{}", e)
         return InMemoryVectorStore()

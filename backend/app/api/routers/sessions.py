@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, File, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.asr import get_asr_adapter
+from app.adapters.asr import get_asr_adapter, get_asr_adapter_name
 from app.agent.runner import SimpleAgentRunner
 from app.core.errors import AdapterError, ErrorCode
 from app.core.events import EventType, make_event, to_sse
@@ -54,6 +54,9 @@ async def create_session(
 ) -> SessionOut:
     repo = SessionRepository(db)
     session = await repo.create(scene=payload.scene, mode=payload.mode, user_id=payload.user_id)
+    # 显式提交：get_session 依赖的 commit 在响应发出后才执行，
+    # 若不在此处提交，紧接着的 /messages 请求可能查不到刚创建的会话（偶发 400）
+    await db.commit()
     return SessionOut.from_orm(session)
 
 
@@ -118,6 +121,7 @@ async def upload_audio(
     asr = get_asr_adapter()
 
     # 流式识别：逐步推送 partial 字幕
+    # 如果第一个适配器失败（如豆包ASR资源未开通），自动重试到下一个适配器
     partial_text = ""
     try:
         async for token in asr.stream_transcribe(audio_bytes, language=language):
@@ -135,19 +139,38 @@ async def upload_audio(
                     ),
                 )
     except AdapterError as e:
-        # ASR 失败：推送 error 事件并降级提示
-        await event_bus.publish(
-            session_id,
-            make_event(
-                EventType.ERROR,
+        # 适配器失败后自动重试（豆包ASR降级后 get_asr_adapter 会返回 Whisper/Vosk）
+        from app.adapters.asr import get_asr_adapter as _get_asr  # noqa: PLC0415
+        asr = _get_asr()
+        try:
+            async for token in asr.stream_transcribe(audio_bytes, language=language):
+                if token:
+                    partial_text += token
+                    await event_bus.publish(
+                        session_id,
+                        make_event(
+                            EventType.TRANSCRIPT_PARTIAL,
+                            session_id,
+                            0,
+                            text=partial_text,
+                            speaker=speaker,
+                            is_final=False,
+                        ),
+                    )
+        except AdapterError as e2:
+            # ASR 失败：推送 error 事件并降级提示
+            await event_bus.publish(
                 session_id,
-                0,
-                code=ErrorCode.ADAPTER_ASR_FAILED.value,
-                message="语音识别失败，请重试或使用文字输入",
-                details={"reason": e.message},
-            ),
-        )
-        return AudioTranscribeResponse(session_id=session_id, text="", ok=False)
+                make_event(
+                    EventType.ERROR,
+                    session_id,
+                    0,
+                    code=ErrorCode.ADAPTER_ASR_FAILED.value,
+                    message="语音识别失败，请重试或使用文字输入",
+                    details={"reason": e2.message},
+                ),
+            )
+            return AudioTranscribeResponse(session_id=session_id, text="", ok=False)
 
     # 取最终文本（partial 可能为空串，回退到整体识别）
     final_text = partial_text.strip()
@@ -201,6 +224,7 @@ async def upload_audio(
         text=final_text,
         message_id=message.id,
         ok=True,
+        asr_adapter=get_asr_adapter_name() or None,
     )
 
 

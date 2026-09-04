@@ -12,6 +12,7 @@ backend/.venv/
 .eggs/
 
 # 后端 - 数据与运行时
+backend/data/
 backend/*.db
 backend/*.db-shm
 backend/*.db-wal
@@ -19,6 +20,8 @@ backend/logs/
 backend/chroma_data/
 backend/models/
 backend/.pytest_cache/
+backend/*.wav
+backend/fix_avatar.js
 
 # 前端
 frontend/node_modules/

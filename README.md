@@ -10,7 +10,7 @@ Bridge 是面向医院、政务大厅等公共服务场景的多模态无障碍�
 
 - **前端**：Vue 3 + TypeScript + Vite + Pinia
 - **后端**：Python + FastAPI + LangGraph
-- **数据**：SQLite + Chroma（后续迁移 PostgreSQL + Milvus/pgvector）
+- **数据**：SQLite + 内存中文向量检索（Chroma 预留，后续迁移 PostgreSQL + Milvus/pgvector）
 
 ## 目录结构
 

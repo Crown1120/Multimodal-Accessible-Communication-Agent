@@ -461,6 +461,7 @@ export const useSessionStore = defineStore('session', () => {
     setSpeechRate,
     setHighContrast,
     loadPreferences,
+    restoreSession,
     clearPreferences,
     $reset,
   }

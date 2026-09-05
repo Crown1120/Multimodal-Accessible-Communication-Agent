@@ -41,6 +41,7 @@ const xingyunLoading = ref(false)
 const xingyunDownloadProgress = ref<number | null>(null)
 const xingyunError = ref('')
 let xingyunAvatar: XmovAvatarInstance | null = null
+let xingyunWatchdog: ReturnType<typeof window.setTimeout> | null = null
 
 // 浏览器原生语音合成（SpeechSynthesis），无需 API Key
 function speakWithBrowser(text: string, speed: number) {
@@ -86,8 +87,42 @@ function loadXingyunSdk(): Promise<void> {
   })
 }
 
+function supportsWebGL2(): boolean {
+  const canvas = document.createElement('canvas')
+  return Boolean(canvas.getContext('webgl2'))
+}
+
+function fallbackFromXingyun(message: string) {
+  xingyunError.value = message
+  xingyunReady.value = false
+  if (xingyunWatchdog !== null) window.clearTimeout(xingyunWatchdog)
+  xingyunAvatar?.destroy('xingyun_fallback')
+  xingyunAvatar = null
+}
+
+function hasRenderedXingyunCanvas(): boolean {
+  const container = document.querySelector<HTMLElement>('#xingyun-avatar-container')
+  const canvas = container?.querySelector<HTMLCanvasElement>('canvas')
+  if (!canvas || canvas.width === 0 || canvas.height === 0) return false
+
+  try {
+    const context = canvas.getContext('2d')
+    if (context) {
+      const pixels = context.getImageData(0, 0, Math.min(canvas.width, 8), Math.min(canvas.height, 8)).data
+      return pixels.some((value) => value !== 0)
+    }
+  } catch {
+    // WebGL canvas cannot be inspected through a 2D context; dimensions are still useful.
+  }
+  return true
+}
+
 async function initXingyun() {
   if (!xingyunConfigured || !xingyunAppId || !xingyunAppSecret) return
+  if (!supportsWebGL2()) {
+    xingyunError.value = '当前浏览器不支持 WebGL2，已使用降级数字人'
+    return
+  }
   xingyunLoading.value = true
   xingyunError.value = ''
   xingyunDownloadProgress.value = 0
@@ -103,7 +138,7 @@ async function initXingyun() {
       onMessage: (error) => {
         const code = error.code || ''
         const message = error.message || ''
-        xingyunError.value = message || '星云数字人发生错误'
+        fallbackFromXingyun(message || '星云数字人发生错误')
         console.error('[Xingyun] code=%s message=%s', code, message)
       },
       onStatusChange: (status) => {
@@ -122,6 +157,11 @@ async function initXingyun() {
     }
     xingyunReady.value = true
     ensureXingyunMuted()
+    xingyunWatchdog = window.setTimeout(() => {
+      if (!hasRenderedXingyunCanvas()) {
+        fallbackFromXingyun('星云数字人未正常渲染，已使用降级数字人')
+      }
+    }, 5000)
   } catch (error) {
     const msg = error instanceof Error ? error.message : '星云数字人初始化失败'
     xingyunError.value = msg
@@ -134,12 +174,12 @@ async function initXingyun() {
 
 function speakWithXingyun(text: string): boolean {
   if (!xingyunReady.value || !xingyunAvatar || xingyunError.value || !text) return false
-  xingyunAvatar.speak(buildSsml(text, 1.0))
+  xingyunAvatar.speak(buildSsml(text))
   return true
 }
 
 // 构造带语速的 SSML（rate 为百分比，100=原速）
-function buildSsml(text: string, speed: number): string {
+function buildSsml(text: string): string {
   // 纯 SSML（不含 prosody），确保 SDK 正常驱动嘴型与肢体动作
   return `<speak>${escapeSsml(text)}</speak>`
 }
@@ -178,7 +218,7 @@ watch(
       // 始终先驱动嘴型（星云 SDK speak 只驱动嘴型/动作，SDK 音频已静音）
       if (xingyunReady.value && xingyunAvatar && !xingyunError.value) {
         try {
-          xingyunAvatar.speak(buildSsml(store.speakingText, speed))
+          speakWithXingyun(store.speakingText)
         } catch (e) {
           console.warn('[Xingyun] lip-sync speak failed:', e)
         }
@@ -223,6 +263,7 @@ onUnmounted(() => {
   }
   xingyunAvatar?.destroy('component_unmounted')
   xingyunAvatar = null
+  if (xingyunWatchdog !== null) window.clearTimeout(xingyunWatchdog)
 })
 
 // 顶部状态：说话/思考/加载/待机

@@ -59,7 +59,7 @@ jobs:
         run: npm ci
 
       - name: Type check
-        run: npx vue-tsc --noEmit || true
+        run: npx vue-tsc --noEmit
 
       - name: Build
         run: npm run build

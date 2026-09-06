@@ -29,6 +29,8 @@ class Document:
 
 
 class VectorStore(Protocol):
+    async def clear(self) -> None: ...
+
     async def add(self, docs: list[Document]) -> None: ...
 
     async def query(
@@ -46,6 +48,10 @@ class InMemoryVectorStore:
     def __init__(self) -> None:
         self._docs: list[Document] = []
         self._vecs: list[Counter[str]] = []
+
+    async def clear(self) -> None:
+        self._docs = []
+        self._vecs = []
 
     async def add(self, docs: list[Document]) -> None:
         for d in docs:
@@ -105,6 +111,11 @@ class ChromaVectorStore:
             metadata={"hnsw:space": "cosine"},
         )
         logger.info("Chroma 集合已就绪：{}", settings.chroma_collection)
+
+    async def clear(self) -> None:
+        self._ensure()
+        assert self._collection is not None
+        self._collection.delete(where={"content_type": "text"})
 
     async def add(self, docs: list[Document]) -> None:
         self._ensure()

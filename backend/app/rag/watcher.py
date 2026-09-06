@@ -4,7 +4,7 @@
 .md 文件的修改时间，发现变化时自动重建向量索引。
 
 使用：
-    watcher = KnowledgeWatcher(store)
+    watcher = KnowledgeWatcher(rag)
     await watcher.start()
     # ... 应用运行 ...
     await watcher.stop()
@@ -15,10 +15,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from app.core.config import settings
 from app.core.logging import get_logger
-from app.rag.indexer import index_knowledge
-from app.rag.store import VectorStore
+from app.rag.retriever import RAGRetriever
 
 logger = get_logger()
 
@@ -28,8 +26,8 @@ _KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "knowled
 class KnowledgeWatcher:
     """知识库文件变化监控器。"""
 
-    def __init__(self, store: VectorStore, interval: float = 5.0) -> None:
-        self._store = store
+    def __init__(self, rag: RAGRetriever, interval: float = 5.0) -> None:
+        self._rag = rag
         self._interval = interval
         self._task: asyncio.Task | None = None
         self._mtimes: dict[str, float] = {}
@@ -80,13 +78,8 @@ class KnowledgeWatcher:
         return changed
 
     async def _rebuild(self, *, initial: bool) -> None:
-        """重建索引。InMemoryVectorStore 需要先清空再重建。"""
-        # InMemoryVectorStore 没有 clear 方法，直接替换内部列表
-        store = self._store
-        if hasattr(store, "_docs"):
-            store._docs.clear()  # type: ignore[attr-defined]
-            store._vecs.clear()  # type: ignore[attr-defined]
-        count = await index_knowledge(store)
+        """通过 RAG 服务重建索引。"""
+        count = await self._rag.reindex()
         if initial:
             logger.info("知识库初始索引完成：{} 个文档块", count)
         else:

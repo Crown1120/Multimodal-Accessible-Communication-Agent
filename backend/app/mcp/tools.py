@@ -45,7 +45,7 @@ _TRANSLATE_DICT = {
 
 
 def _locations_for(scene: str) -> dict[str, dict]:
-    return _HOSPITAL_LOCATIONS if scene == "government" else _GOVERNMENT_LOCATIONS
+    return _GOVERNMENT_LOCATIONS if scene == "government" else _HOSPITAL_LOCATIONS
 
 
 class ServiceQueryTool(Tool):

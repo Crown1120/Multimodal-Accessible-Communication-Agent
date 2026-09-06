@@ -31,12 +31,11 @@ async def lifespan(_app: FastAPI):
     logger.info("数据库初始化完成")
 
     # 知识库索引 + 热加载监控
-    from app.rag.store import get_vector_store
+    from app.rag.retriever import get_rag
     from app.rag.watcher import KnowledgeWatcher
     from app.core.task_manager import background_tasks
 
-    vector_store = get_vector_store()
-    watcher = KnowledgeWatcher(vector_store)
+    watcher = KnowledgeWatcher(get_rag())
     await watcher.start()
 
     yield

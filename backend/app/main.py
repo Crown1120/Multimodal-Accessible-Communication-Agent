@@ -33,6 +33,7 @@ async def lifespan(_app: FastAPI):
     # 知识库索引 + 热加载监控
     from app.rag.store import get_vector_store
     from app.rag.watcher import KnowledgeWatcher
+    from app.core.task_manager import background_tasks
 
     vector_store = get_vector_store()
     watcher = KnowledgeWatcher(vector_store)
@@ -41,6 +42,7 @@ async def lifespan(_app: FastAPI):
     yield
 
     await watcher.stop()
+    await background_tasks.shutdown()
     logger.info("Bridge 后端关闭")
 
 

@@ -26,6 +26,7 @@ from app.core.config import settings
 from app.core.errors import AdapterError, ErrorCode
 from app.core.events import EventType, make_event, to_sse
 from app.core.logging import get_logger
+from app.core.task_manager import background_tasks
 from app.memory.service import get_memory_service
 from app.models.database import async_session_factory, get_session as get_db
 from app.models.schemas import (
@@ -103,7 +104,10 @@ async def send_message(
     await db.commit()
 
     # 异步启动 Agent（使用独立 DB 会话，避免与请求会话生命周期冲突）
-    asyncio.create_task(_run_agent(session_id, message.content, message.id))
+    background_tasks.create(
+        _run_agent(session_id, message.content, message.id),
+        name=f"agent:{session_id}:{message.id}",
+    )
     return SendMessageResponse(run_id=message.id, message_id=message.id)
 
 
@@ -235,7 +239,10 @@ async def upload_audio(
     )
 
     # 异步触发 Agent
-    asyncio.create_task(_run_agent(session_id, final_text, message.id))
+    background_tasks.create(
+        _run_agent(session_id, final_text, message.id),
+        name=f"agent:{session_id}:{message.id}",
+    )
     return AudioTranscribeResponse(
         session_id=session_id,
         text=final_text,

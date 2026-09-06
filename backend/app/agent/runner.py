@@ -15,6 +15,7 @@ from app.agent.state import AgentState
 from app.adapters.digital_human import get_digital_human_adapter
 from app.core.events import EventType, make_event
 from app.core.logging import get_logger
+from app.core.task_manager import background_tasks
 from app.models.db_models import Session
 from app.repositories.session_repo import (
     AgentRunRepository,
@@ -108,7 +109,10 @@ class AgentRunner:
         speak_payload = await _build_speak_payload_without_audio(dh, reply, session.mode)
         await event_bus.publish(sid, make_event(EventType.DIGITAL_HUMAN_SPEAK, sid, 0, **speak_payload))
         # 异步合成音频，完成后推送 digital_human.audio_ready
-        asyncio.create_task(_synthesize_and_publish_audio(sid, dh, reply, speak_payload.get("speed", 1.0)))
+        background_tasks.create(
+            _synthesize_and_publish_audio(sid, dh, reply, speak_payload.get("speed", 1.0)),
+            name=f"tts:{sid}:{assistant.id}",
+        )
 
         # 6. agent.completed
         duration_ms = int((time.perf_counter() - started_at) * 1000)

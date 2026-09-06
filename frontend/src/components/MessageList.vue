@@ -68,6 +68,7 @@ function fmtTime(iso?: string): string {
         <div class="meta">
           <span class="speaker">{{ speakerName(m) }}</span>
           <span class="time" v-if="fmtTime(m.created_at)">{{ fmtTime(m.created_at) }}</span>
+          <span v-if="m.send_status === 'failed'" class="send-status">发送失败</span>
         </div>
         <div class="bubble">
           {{ m.content }}

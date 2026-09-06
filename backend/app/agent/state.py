@@ -11,6 +11,7 @@ class AgentState(TypedDict, total=False):
     """Agent 运行状态。"""
 
     session_id: str
+    run_id: str
     scene: str
     user_text: str
     history: list[dict[str, str]]

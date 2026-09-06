@@ -210,7 +210,7 @@ class BridgeAgent:
             async for ch in self._stream_text(_PRIVACY_REPLY):
                 await event_bus.publish(
                     sid,
-                    make_event(EventType.MESSAGE_DELTA, sid, 0, text=ch, role="assistant"),
+                    make_event(EventType.MESSAGE_DELTA, sid, 0, text=ch, role="assistant", run_id=state.get("run_id")),
                 )
             return {"reply": _PRIVACY_REPLY}
 
@@ -221,7 +221,7 @@ class BridgeAgent:
             async for ch in self._stream_text(text):
                 await event_bus.publish(
                     sid,
-                    make_event(EventType.MESSAGE_DELTA, sid, 0, text=ch, role="assistant"),
+                    make_event(EventType.MESSAGE_DELTA, sid, 0, text=ch, role="assistant", run_id=state.get("run_id")),
                 )
             return {"reply": text}
 
@@ -234,7 +234,7 @@ class BridgeAgent:
                 full += chunk
                 await event_bus.publish(
                     sid,
-                    make_event(EventType.MESSAGE_DELTA, sid, 0, text=chunk, role="assistant"),
+                    make_event(EventType.MESSAGE_DELTA, sid, 0, text=chunk, role="assistant", run_id=state.get("run_id")),
                 )
         except Exception as e:  # noqa: BLE001
             logger.exception("LLM 流式回复失败")

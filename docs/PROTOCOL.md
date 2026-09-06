@@ -57,9 +57,10 @@ data: {"type":"agent.started","session_id":"sess_xxx","seq":1,"data":{"run_id":"
 | tool.started | tool, args |
 | tool.completed | tool, result |
 | tool.failed | tool, code, message |
-| message.delta | text, role |
-| message.completed | message_id, role, content |
-| digital_human.speak | text, audio_url, emotion |
+| message.delta | text, role, run_id |
+| message.completed | message_id, role, content, run_id |
+| digital_human.speak | text, audio_url, emotion, run_id |
+| digital_human.audio_ready | audio_url, text, run_id |
 | widget.show / update / close | widget_id, widget_type, payload |
 | error | code, message, details |
 

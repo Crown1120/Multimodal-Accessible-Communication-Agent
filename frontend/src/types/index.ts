@@ -62,6 +62,8 @@ export interface Message {
   language?: string
   message_type?: 'text' | 'audio' | 'transcript'
   created_at?: string
+  run_id?: string
+  send_status?: 'pending' | 'sent' | 'failed'
 }
 
 /** Agent 执行状态 */

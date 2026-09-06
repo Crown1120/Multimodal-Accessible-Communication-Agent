@@ -60,6 +60,7 @@ class AgentRunner:
 
         state: AgentState = {
             "session_id": sid,
+            "run_id": run.id,
             "scene": session.scene,
             "user_text": user_text,
             "history": history,
@@ -100,6 +101,7 @@ class AgentRunner:
                 sid,
                 0,
                 message_id=assistant.id,
+                run_id=run.id,
                 role="assistant",
                 content=reply,
             ),
@@ -107,10 +109,13 @@ class AgentRunner:
         dh = get_digital_human_adapter()
         # 先构造不含音频的 speak payload（快速推送，前端立即驱动嘴型/字幕）
         speak_payload = await _build_speak_payload_without_audio(dh, reply, session.mode)
-        await event_bus.publish(sid, make_event(EventType.DIGITAL_HUMAN_SPEAK, sid, 0, **speak_payload))
+        await event_bus.publish(
+            sid,
+            make_event(EventType.DIGITAL_HUMAN_SPEAK, sid, 0, run_id=run.id, **speak_payload),
+        )
         # 异步合成音频，完成后推送 digital_human.audio_ready
         background_tasks.create(
-            _synthesize_and_publish_audio(sid, dh, reply, speak_payload.get("speed", 1.0)),
+            _synthesize_and_publish_audio(sid, dh, reply, speak_payload.get("speed", 1.0), run.id),
             name=f"tts:{sid}:{assistant.id}",
         )
 
@@ -152,7 +157,7 @@ async def _build_speak_payload_without_audio(dh, text: str, mode: str) -> dict:
     return payload
 
 
-async def _synthesize_and_publish_audio(session_id: str, dh, text: str, speed: float) -> None:
+async def _synthesize_and_publish_audio(session_id: str, dh, text: str, speed: float, run_id: str) -> None:
     """异步合成音频并推送 digital_human.audio_ready 事件。"""
     try:
         audio_url = await dh.synthesize_audio(text, speed=speed)
@@ -165,6 +170,7 @@ async def _synthesize_and_publish_audio(session_id: str, dh, text: str, speed: f
                     0,
                     audio_url=audio_url,
                     text=text,
+                    run_id=run_id,
                 ),
             )
     except Exception:  # noqa: BLE001

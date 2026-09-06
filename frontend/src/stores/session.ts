@@ -125,22 +125,27 @@ export const useSessionStore = defineStore('session', () => {
         setTimeout(() => (agentStatus.value = 'idle'), 1500)
         break
       case 'message.delta':
-        // 增量合并到最后一条 assistant 消息
-        if (messages.value.at(-1)?.role !== 'assistant') {
+        // Use the run ID so interleaved or replayed events cannot update another reply.
+        const deltaRunId = d.run_id as string | undefined
+        let deltaMessage = deltaRunId
+          ? messages.value.find((m) => m.run_id === deltaRunId)
+          : undefined
+        if (!deltaMessage) {
           messages.value.push({
             id: crypto.randomUUID(),
             session_id: event.session_id,
             role: 'assistant',
             content: '',
+            run_id: deltaRunId,
           })
+          deltaMessage = messages.value.at(-1)
         }
         {
-          const last = messages.value.at(-1)!
-          last.content += (d.text as string) ?? ''
+          deltaMessage!.content += (d.text as string) ?? ''
           // 数字人正在播报，同步驱动字幕
           speaking.value = true
-          speakingText.value = last.content
-          transcript.value = last.content
+          speakingText.value = deltaMessage!.content
+          transcript.value = deltaMessage!.content
           transcriptSpeaker.value = 'assistant'
         }
         break
@@ -148,19 +153,18 @@ export const useSessionStore = defineStore('session', () => {
         // 优先按 message_id 匹配；找不到则更新最后一条 assistant 消息（避免重复）
         const content = (d.content as string) ?? ''
         let idx = d.message_id ? messages.value.findIndex((m) => m.id === d.message_id) : -1
-        if (idx < 0) {
-          // delta 阶段用随机 UUID 创建的消息，用最后一条 assistant 消息替换
-          idx = messages.value.findIndex((m, i) => m.role === 'assistant' && i === messages.value.length - 1)
-        }
+        if (idx < 0 && d.run_id) idx = messages.value.findIndex((m) => m.run_id === d.run_id)
         if (idx >= 0) {
           messages.value[idx].id = (d.message_id as string) ?? messages.value[idx].id
           messages.value[idx].content = content
+          messages.value[idx].send_status = 'sent'
         } else {
           messages.value.push({
             id: (d.message_id as string) ?? crypto.randomUUID(),
             session_id: event.session_id,
             role: d.role as Message['role'],
             content,
+            run_id: d.run_id as string | undefined,
           })
         }
         // 播报完成，清空实时字幕
@@ -225,13 +229,23 @@ export const useSessionStore = defineStore('session', () => {
   // 发送消息
   async function sendMessage(content: string) {
     if (!sessionId.value) return
+    const localId = crypto.randomUUID()
     messages.value.push({
-      id: crypto.randomUUID(),
+      id: localId,
       session_id: sessionId.value,
       role: 'user',
       content,
+      send_status: 'pending',
     })
-    await api.sendMessage(sessionId.value, { role: 'user', content })
+    try {
+      await api.sendMessage(sessionId.value, { role: 'user', content })
+      const localMessage = messages.value.find((m) => m.id === localId)
+      if (localMessage) localMessage.send_status = 'sent'
+    } catch (error) {
+      const localMessage = messages.value.find((m) => m.id === localId)
+      if (localMessage) localMessage.send_status = 'failed'
+      throw error
+    }
   }
 
   // 上传音频（ASR 转字幕 + 触发 Agent）

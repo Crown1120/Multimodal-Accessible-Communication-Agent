@@ -4,14 +4,12 @@ services:
     container_name: bridge-backend
     ports:
       - "8000:8000"
-    env_file:
-      - ./backend/.env
     environment:
-      - PYTHONPATH=/app
-      - BRIDGE_DB_URL=sqlite+aiosqlite:///data/bridge.db
-      - BRIDGE_CHROMA_PATH=chroma
-      - BRIDGE_LOG_FILE=logs/bridge.log
-      - ENVIRONMENT=production
+      PYTHONPATH: /app
+      SQLITE_URL: sqlite+aiosqlite:////app/data/bridge.db
+      CHROMA_PATH: /app/chroma
+      LOG_FILE: /app/logs/bridge.log
+      ENVIRONMENT: production
     volumes:
       - backend-data:/app/data
       - backend-logs:/app/logs

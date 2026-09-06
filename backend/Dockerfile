@@ -20,9 +20,9 @@ RUN mkdir -p /app/data /app/logs /app/chroma \
     && chown -R nobody:nogroup /app
 
 ENV PYTHONPATH=/app
-ENV BRIDGE_DB_URL=sqlite+aiosqlite:///data/bridge.db
-ENV BRIDGE_CHROMA_PATH=chroma
-ENV BRIDGE_LOG_FILE=logs/bridge.log
+ENV SQLITE_URL=sqlite+aiosqlite:////app/data/bridge.db
+ENV CHROMA_PATH=/app/chroma
+ENV LOG_FILE=/app/logs/bridge.log
 ENV ENVIRONMENT=production
 
 EXPOSE 8000

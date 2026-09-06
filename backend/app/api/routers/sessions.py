@@ -46,6 +46,12 @@ from app.services.event_bus import event_bus
 
 logger = get_logger()
 router = APIRouter()
+_session_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_session_lock(session_id: str) -> asyncio.Lock:
+    """Return the process-local serialization lock for one session."""
+    return _session_locks.setdefault(session_id, asyncio.Lock())
 
 
 @router.post("", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
@@ -97,7 +103,7 @@ async def send_message(
     await db.commit()
 
     # 异步启动 Agent（使用独立 DB 会话，避免与请求会话生命周期冲突）
-    asyncio.create_task(_run_agent(session_id, message.content))
+    asyncio.create_task(_run_agent(session_id, message.content, message.id))
     return SendMessageResponse(run_id=message.id, message_id=message.id)
 
 
@@ -229,7 +235,7 @@ async def upload_audio(
     )
 
     # 异步触发 Agent
-    asyncio.create_task(_run_agent(session_id, final_text))
+    asyncio.create_task(_run_agent(session_id, final_text, message.id))
     return AudioTranscribeResponse(
         session_id=session_id,
         text=final_text,
@@ -239,38 +245,42 @@ async def upload_audio(
     )
 
 
-async def _run_agent(session_id: str, user_text: str) -> None:
-    async with async_session_factory() as task_db:
-        try:
-            repo = SessionRepository(task_db)
-            session = await repo.get(session_id)
-            runner = SimpleAgentRunner(task_db)
+async def _run_agent(session_id: str, user_text: str, message_id: str) -> None:
+    async with _get_session_lock(session_id):
+        async with async_session_factory() as task_db:
             try:
-                await asyncio.wait_for(runner.run(session, user_text), timeout=settings.agent_timeout_seconds)
-            except asyncio.TimeoutError:
-                logger.error("Agent 运行超时 session={} timeout={}s", session_id, settings.agent_timeout_seconds)
+                repo = SessionRepository(task_db)
+                session = await repo.get(session_id)
+                runner = SimpleAgentRunner(task_db)
+                try:
+                    await asyncio.wait_for(
+                        runner.run(session, user_text, message_id),
+                        timeout=settings.agent_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("Agent 运行超时 session={} timeout={}s", session_id, settings.agent_timeout_seconds)
+                    await event_bus.publish(
+                        session_id,
+                        make_event(
+                            EventType.ERROR,
+                            session_id,
+                            0,
+                            code="ERR_3002",
+                            message=f"处理超时（{settings.agent_timeout_seconds}秒），请简化问题后重试",
+                        ),
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("Agent 运行失败 session={}", session_id)
                 await event_bus.publish(
                     session_id,
                     make_event(
                         EventType.ERROR,
                         session_id,
                         0,
-                        code="ERR_3002",
-                        message=f"处理超时（{settings.agent_timeout_seconds}秒），请简化问题后重试",
+                        code="ERR_3001",
+                        message="Agent 处理异常",
                     ),
                 )
-        except Exception:  # noqa: BLE001
-            logger.exception("Agent 运行失败 session={}", session_id)
-            await event_bus.publish(
-                session_id,
-                make_event(
-                    EventType.ERROR,
-                    session_id,
-                    0,
-                    code="ERR_3001",
-                    message="Agent 处理异常",
-                ),
-            )
 
 
 @router.get("/{session_id}/messages", response_model=list[MessageOut])

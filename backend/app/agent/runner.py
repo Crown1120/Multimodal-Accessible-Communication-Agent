@@ -30,7 +30,7 @@ class AgentRunner:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def run(self, session: Session, user_text: str) -> None:
+    async def run(self, session: Session, user_text: str, message_id: str) -> None:
         started_at = time.perf_counter()
         sid = session.id
         run_repo = AgentRunRepository(self.db)
@@ -54,7 +54,7 @@ class AgentRunner:
         history = [
             {"role": m.role, "content": m.content}
             for m in history_orm
-            if m.content != user_text or m.role != "user"
+            if m.id != message_id
         ][-20:]
 
         state: AgentState = {

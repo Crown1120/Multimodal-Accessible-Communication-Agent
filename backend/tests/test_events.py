@@ -7,6 +7,7 @@ import json
 import pytest
 
 from app.core.events import EventType, make_event, to_sse
+from app.services.event_bus import EventBus
 
 
 class TestEventType:
@@ -102,3 +103,19 @@ class TestToSSE:
         event = make_event(EventType.TRANSCRIPT_PARTIAL, "sess_789", 42)
         sse = to_sse(event)
         assert "id: 42" in sse
+
+
+class TestEventBus:
+    """事件重放与实时订阅测试。"""
+
+    @pytest.mark.asyncio
+    async def test_subscribe_replays_events_after_last_sequence(self):
+        bus = EventBus()
+        await bus.publish("sess_1", make_event(EventType.AGENT_STARTED, "sess_1", 0))
+        await bus.publish("sess_1", make_event(EventType.AGENT_COMPLETED, "sess_1", 0))
+
+        queue = await bus.subscribe("sess_1", last_seq=1)
+        event = await queue.get()
+
+        assert event.seq == 2
+        assert event.type == EventType.AGENT_COMPLETED

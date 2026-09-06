@@ -42,14 +42,16 @@ class _SessionStream:
 
     async def subscribe(self, last_seq: int = 0) -> asyncio.Queue[Event]:
         q: asyncio.Queue[Event] = asyncio.Queue(maxsize=1024)
-        # 重放缺失事件
-        for ev in list(self._buffer):
-            if ev.seq > last_seq:
-                try:
-                    q.put_nowait(ev)
-                except asyncio.QueueFull:
-                    break
-        self._queues.append(q)
+        # Replay and registration must be atomic, otherwise an event published
+        # between these operations can be missed by a reconnecting client.
+        async with self._lock:
+            for ev in self._buffer:
+                if ev.seq > last_seq:
+                    try:
+                        q.put_nowait(ev)
+                    except asyncio.QueueFull:
+                        break
+            self._queues.append(q)
         return q
 
     def unsubscribe(self, q: asyncio.Queue[Event]) -> None:

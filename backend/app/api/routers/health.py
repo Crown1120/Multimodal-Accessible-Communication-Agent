@@ -17,11 +17,35 @@ class AdapterStatus(BaseModel):
     mode: str  # "real" 或 "mock"
 
 
+class DatabaseStatus(BaseModel):
+    type: str
+    connected: bool
+    detail: str = ""
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str
     environment: str
+    uptime_seconds: float
     adapters: list[AdapterStatus] = []
+    database: DatabaseStatus | None = None
+
+
+_START_TIME = __import__("time").time()
+
+
+async def _check_database() -> DatabaseStatus:
+    """检查数据库连通性（执行简单查询）。"""
+    try:
+        from sqlalchemy import text
+        from app.models.database import engine, _use_postgres
+        db_type = "postgresql" if _use_postgres else "sqlite"
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return DatabaseStatus(type=db_type, connected=True, detail="ok")
+    except Exception as e:
+        return DatabaseStatus(type="unknown", connected=False, detail=str(e)[:200])
 
 
 def _check_adapters() -> list[AdapterStatus]:
@@ -64,9 +88,12 @@ def _check_adapters() -> list[AdapterStatus]:
 
 @router.get("/health", response_model=HealthResponse, summary="健康检查")
 async def health() -> HealthResponse:
+    import time
     return HealthResponse(
         status="ok",
         version=__version__,
         environment=settings.environment,
+        uptime_seconds=round(time.time() - _START_TIME, 1),
         adapters=_check_adapters(),
+        database=await _check_database(),
     )

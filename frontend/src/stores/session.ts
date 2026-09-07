@@ -28,6 +28,8 @@ export const useSessionStore = defineStore('session', () => {
   const speakingExpression = ref<string>('neutral') // 数字人表情
   const widgets = ref<WidgetData[]>([])
   const recording = ref<boolean>(false) // 是否正在录音
+  const sending = ref<boolean>(false) // 是否正在发送消息
+  const flash = ref<boolean>(false) // 听障模式闪光通知
   const lastError = ref<string>('') // 最近错误提示
   const asrAdapter = ref<string>('') // 当前实际使用的ASR适配器（豆包大模型/Whisper离线/Vosk离线/演示模式）
 
@@ -180,6 +182,7 @@ export const useSessionStore = defineStore('session', () => {
       }
       case 'digital_human.speak':
         speaking.value = true
+        flashNotification()
         speakingText.value = (d.text as string) ?? ''
         transcript.value = (d.text as string) ?? ''
         transcriptSpeaker.value = 'assistant'
@@ -235,7 +238,8 @@ export const useSessionStore = defineStore('session', () => {
 
   // 发送消息
   async function sendMessage(content: string) {
-    if (!sessionId.value) return
+    if (!sessionId.value || sending.value) return
+    sending.value = true
     const localId = crypto.randomUUID()
     messages.value.push({
       id: localId,
@@ -252,7 +256,16 @@ export const useSessionStore = defineStore('session', () => {
       const localMessage = messages.value.find((m) => m.id === localId)
       if (localMessage) localMessage.send_status = 'failed'
       throw error
+    } finally {
+      sending.value = false
     }
+  }
+
+  // 听障模式闪光通知：重要消息时触发页面边框闪烁
+  function flashNotification() {
+    if (mode.value !== 'hearing') return
+    flash.value = true
+    setTimeout(() => { flash.value = false }, 1500)
   }
 
   // 上传音频（ASR 转字幕 + 触发 Agent）
@@ -472,6 +485,9 @@ export const useSessionStore = defineStore('session', () => {
     speechRate,
     highContrast,
     isConnected,
+    sending,
+    flash,
+    flashNotification,
     isHighContrast,
     isLargeFont,
     isSlowSpeech,

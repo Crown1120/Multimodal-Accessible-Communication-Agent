@@ -7,9 +7,13 @@ import DigitalHuman from '@/components/DigitalHuman.vue'
 import InputBar from '@/components/InputBar.vue'
 import ModeSwitcher from '@/components/ModeSwitcher.vue'
 import PreferencePanel from '@/components/PreferencePanel.vue'
+import Toast from '@/components/Toast.vue'
+import ElderlyGuide from '@/components/ElderlyGuide.vue'
+import { useToast } from '@/composables/useToast'
 import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
+const toast = useToast()
 
 // 模式变化时同步到根元素（驱动无障碍 CSS 变量）
 watch(
@@ -36,6 +40,7 @@ async function autoConnect() {
       }
     }
     // 3 次都失败，状态保持 error，用户可手动点重新连接
+    toast.error('连接服务器失败，请检查网络后点击「重新连接」')
   }
 }
 
@@ -71,7 +76,7 @@ const statusInfo = computed(() => {
 </script>
 
 <template>
-  <div class="workbench">
+  <div class="workbench" :class="{ flash: store.flash }">
     <header class="topbar">
       <div class="brand">
         <div class="brand-logo">
@@ -92,9 +97,6 @@ const statusInfo = computed(() => {
           <BIcon :name="statusInfo.icon" :size="15" />
           <span>{{ statusInfo.label }}</span>
         </div>
-        <span v-if="store.sessionId" class="session-id" :title="store.sessionId">
-          {{ store.sessionId.slice(0, 8) }}
-        </span>
         <ModeSwitcher />
         <PreferencePanel />
         <button v-if="store.status === 'error'" class="primary start-btn" @click="reconnect">
@@ -113,6 +115,8 @@ const statusInfo = computed(() => {
         </div>
       </section>
     </main>
+    <Toast />
+    <ElderlyGuide />
   </div>
 </template>
 
@@ -232,14 +236,6 @@ const statusInfo = computed(() => {
   border-color: transparent;
 }
 
-.session-id {
-  color: var(--color-text-faint);
-  font-family: var(--font-mono);
-  font-size: 0.78em;
-  padding: 3px 8px;
-  border: 1px dashed var(--color-border-strong);
-  border-radius: 6px;
-}
 
 .start-btn {
   padding: 8px 18px;
@@ -283,5 +279,52 @@ const statusInfo = computed(() => {
 }
 .control-bar > :deep(.input-bar) {
   border-right: 1px solid var(--color-border);
+}
+
+/* 听障模式闪光通知：重要消息时页面边框闪烁 */
+.workbench.flash::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  border: 6px solid #ffd700;
+  pointer-events: none;
+  z-index: 9998;
+  animation: flash-border 0.5s ease-in-out 3;
+}
+@keyframes flash-border {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+/* 视障/键盘导航增强：焦点环强化 */
+*:focus-visible {
+  outline: 3px solid #4f6ef7 !important;
+  outline-offset: 2px !important;
+  border-radius: 4px;
+}
+/* 听障模式下焦点环用高对比度黄色 */
+[data-mode='hearing'] *:focus-visible {
+  outline-color: #ffd700 !important;
+  outline-width: 4px !important;
+}
+/* 跳过导航链接（键盘用户快速跳到主内容） */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: #4f6ef7;
+  color: #fff;
+  padding: 8px 16px;
+  z-index: 10001;
+  transition: top 0.2s;
+}
+.skip-link:focus {
+  top: 0;
+}
+/* 老年模式下所有可点击元素更大 */
+[data-mode='elderly'] button,
+[data-mode='elderly'] textarea,
+[data-mode='elderly'] input {
+  min-height: 44px;
 }
 </style>

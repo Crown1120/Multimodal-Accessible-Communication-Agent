@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 
 from loguru import logger
@@ -15,6 +17,26 @@ from app.core.config import settings
 
 # 需要脱敏的字段名模式
 _SENSITIVE_KEYS = re.compile(r"(token|secret|password|api_key|apikey)", re.IGNORECASE)
+
+# 请求ID上下文（用于链路追踪，中间件设置）
+request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+def _json_serializer(record) -> str:
+    """将 loguru record 序列化为 JSON（生产环境结构化日志）。"""
+    try:
+        payload = {
+            "ts": record["time"].isoformat(),
+            "level": record["level"].name,
+            "logger": f"{record['name']}:{record['function']}:{record['line']}",
+            "msg": record["message"],
+            "request_id": request_id_var.get(),
+        }
+        if record.get("exception"):
+            payload["exception"] = str(record["exception"])
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        return record["message"]
 
 
 def _redact_message(message: str) -> str:
@@ -79,6 +101,19 @@ def setup_logging() -> None:
         backtrace=settings.debug,
         diagnose=settings.debug,
         filter=_redact_filter,
+    )
+
+    # JSON 结构化文件（生产环境，便于日志采集）
+    json_log_path = log_path.with_suffix(".jsonl")
+    logger.add(
+        str(json_log_path),
+        level=settings.log_level,
+        rotation="10 MB",
+        retention="14 days",
+        compression="zip",
+        format=_json_serializer,
+        filter=_redact_filter,
+        serialize=False,
     )
 
     logger.info("日志系统已就绪，级别={}，文件={}", settings.log_level, settings.log_file)

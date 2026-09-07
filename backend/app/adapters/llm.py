@@ -77,6 +77,11 @@ class MockLLMAdapter:
 
 
 # ---- OpenAI 兼容适配器 ----
+# LLM 回复缓存：相同用户问题不重复调用 LLM（医院导诊高频问题命中率高）
+_llm_cache: dict[str, str] = {}
+_LLM_CACHE_MAX = 100
+
+
 class OpenAILLMAdapter:
     def __init__(
         self,
@@ -90,9 +95,20 @@ class OpenAILLMAdapter:
         self.model = model or settings.llm_model
 
     async def reply(self, messages: list[dict[str, str]]) -> str:
+        # 缓存 key：模型 + 最后一条用户消息（医院导诊场景相同问题回复相同）
+        user_msg = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+        cache_key = f"{self.model}:{user_msg}"
+        if cache_key in _llm_cache:
+            return _llm_cache[cache_key]
         payload = {"model": self.model, "messages": messages, "stream": False}
         data = await self._post(payload)
-        return data["choices"][0]["message"]["content"]
+        reply = data["choices"][0]["message"]["content"]
+        # 简单 LRU：超过上限时淘汰最早的一半
+        if len(_llm_cache) >= _LLM_CACHE_MAX:
+            for k in list(_llm_cache.keys())[: _LLM_CACHE_MAX // 2]:
+                del _llm_cache[k]
+        _llm_cache[cache_key] = reply
+        return reply
 
     async def stream_reply(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         payload = {"model": self.model, "messages": messages, "stream": True}

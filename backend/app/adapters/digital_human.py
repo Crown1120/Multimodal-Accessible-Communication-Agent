@@ -126,11 +126,21 @@ class MinimalDigitalHumanAdapter:
         return payload
 
     async def synthesize_audio(self, text: str, *, speed: float = 1.0) -> str | None:
-        """仅合成音频，返回 base64 data URL（用于异步 TTS，先推送文本再推送音频）。"""
+        """仅合成音频，返回 base64 data URL（用于异步 TTS，先推送文本再推送音频）。
+        相同文本+语速命中缓存时直接返回，避免重复合成。"""
+        cache_key = f"{speed}:{text}"
+        if cache_key in _tts_cache:
+            return _tts_cache[cache_key]
         try:
             tts_result = await self._tts.synthesize(text, speed=speed)
             if tts_result.audio:
-                return "data:audio/mpeg;base64," + _to_b64(tts_result.audio)
+                audio_url = "data:audio/mpeg;base64," + _to_b64(tts_result.audio)
+                # 简单 LRU：超过上限时淘汰最早的一半
+                if len(_tts_cache) >= _TTS_CACHE_MAX:
+                    for k in list(_tts_cache.keys())[: _TTS_CACHE_MAX // 2]:
+                        del _tts_cache[k]
+                _tts_cache[cache_key] = audio_url
+                return audio_url
         except Exception as e:  # noqa: BLE001
             logger.warning("异步 TTS 合成失败：{}", e)
         return None
@@ -171,6 +181,11 @@ class MinimalDigitalHumanAdapter:
             if keyword in text:
                 return expression
         return "neutral"
+
+
+# TTS 音频缓存：相同文本+语速不重复合成（医院导诊高频问题命中率高）
+_tts_cache: dict[str, str] = {}
+_TTS_CACHE_MAX = 200
 
 
 def _to_b64(data: bytes) -> str:

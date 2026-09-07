@@ -138,7 +138,12 @@ async function initXingyun() {
       onMessage: (error) => {
         const code = error.code || ''
         const message = error.message || ''
-        fallbackFromXingyun(message || '星云数字人发生错误')
+        // 并发数已满（Error:7）是服务端配额问题，提示更友好
+        if (code === '7' || message.includes('并发') || message.includes('concurrent')) {
+          fallbackFromXingyun('数字人服务繁忙，已切换为语音模式（不影响对话）')
+        } else {
+          fallbackFromXingyun(message || '星云数字人发生错误')
+        }
         console.error('[Xingyun] code=%s message=%s', code, message)
       },
       onStatusChange: (status) => {

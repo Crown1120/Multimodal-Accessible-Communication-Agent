@@ -23,6 +23,7 @@ export const useSessionStore = defineStore('session', () => {
   const speakingAudioUrl = ref<string | null>(null) // 数字人语音 URL
   const speakingSpeed = ref<number>(1.0) // 播报语速
   const needRepeat = ref<boolean>(false) // 重要信息需重复确认
+  const speakingRunId = ref<string | null>(null) // 当前播报所属 run_id（防异步音频串消息）
   const speakingGesture = ref<string>('idle') // 数字人手势动作
   const speakingExpression = ref<string>('neutral') // 数字人表情
   const widgets = ref<WidgetData[]>([])
@@ -142,9 +143,9 @@ export const useSessionStore = defineStore('session', () => {
         }
         {
           deltaMessage!.content += (d.text as string) ?? ''
-          // 数字人正在播报，同步驱动字幕
-          speaking.value = true
-          speakingText.value = deltaMessage!.content
+          // 流式文本仅用于消息列表与实时字幕展示；
+          // 数字人播报统一由 digital_human.speak 触发，
+          // 避免流式期间提前驱动字幕/嘴型导致与 TTS 音频不同步
           transcript.value = deltaMessage!.content
           transcriptSpeaker.value = 'assistant'
         }
@@ -171,6 +172,7 @@ export const useSessionStore = defineStore('session', () => {
         speaking.value = false
         speakingText.value = ''
         speakingAudioUrl.value = null
+        speakingRunId.value = null
         needRepeat.value = false
         transcript.value = ''
         transcriptSpeaker.value = ''
@@ -185,13 +187,18 @@ export const useSessionStore = defineStore('session', () => {
         // 音频稍后通过 digital_human.audio_ready 事件推送
         speakingAudioUrl.value = (d.audio_url as string) ?? null
         speakingSpeed.value = (d.speed as number) ?? 1.0
+        speakingRunId.value = (d.run_id as string) ?? null
         needRepeat.value = (d.repeat as boolean) ?? false
         speakingGesture.value = (d.gesture as string) ?? 'idle'
         speakingExpression.value = (d.expression as string) ?? 'neutral'
         break
       case 'digital_human.audio_ready':
-        // 异步 TTS 音频就绪：更新 audio_url，DigitalHuman 组件会 watch 到变化并播放
-        if (speaking.value) {
+        // 异步 TTS 音频就绪：仅接受当前播报 run_id 的音频，
+        // 防止上一条消息的慢音频覆盖新播报
+        if (
+          speaking.value
+          && (!speakingRunId.value || d.run_id === speakingRunId.value)
+        ) {
           speakingAudioUrl.value = (d.audio_url as string) ?? null
         }
         break
@@ -424,6 +431,7 @@ export const useSessionStore = defineStore('session', () => {
     speaking.value = false
     speakingText.value = ''
     speakingAudioUrl.value = null
+    speakingRunId.value = null
     needRepeat.value = false
     speakingGesture.value = 'idle'
     speakingExpression.value = 'neutral'

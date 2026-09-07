@@ -209,42 +209,84 @@ function ensureXingyunMuted() {
   xingyunMuteObserver.observe(container, { childList: true, subtree: true })
 }
 
-// 监听播报事件（TTS 异步化：先驱动嘴型，音频就绪后再播放）
+// ---- 播报同步机制 ----
+// 后端 TTS 异步化：digital_human.speak（无音频）先到，音频经 1-3s 合成后由
+// digital_human.audio_ready 推送。若 speak 一到就调 SDK speak()，SDK 自带字幕
+// 会立即开始显示，音频却要等合成完成才播放 → 字幕与音频明显不同步。
+// 因此：speak 仅记录状态并启动「音频兜底定时器」，audio_ready 就绪后
+// 在同一时刻启动 SDK 播报（字幕+嘴型）与音频播放，保证三者同步。
+let speakFallbackTimer: ReturnType<typeof window.setTimeout> | null = null
+
+function clearSpeakFallback() {
+  if (speakFallbackTimer !== null) {
+    window.clearTimeout(speakFallbackTimer)
+    speakFallbackTimer = null
+  }
+}
+
+// 同时启动：SDK 播报（字幕+嘴型） + 音频播放（或降级浏览器 TTS）
+function startSpeechSync() {
+  const text = store.speakingText
+  if (!text) return
+  const speed = store.speakingSpeed || 1.0
+  // 先准备音频源（触发解码），让 audio.play() 在 SDK 播报启动后尽快出声
+  const hasAudio = Boolean(store.speakingAudioUrl && audioEl.value)
+  if (hasAudio) {
+    audioEl.value!.src = store.speakingAudioUrl as string
+    audioEl.value!.playbackRate = speed
+  }
+  // 星云可用：SDK 播报（字幕+嘴型）与音频同一时刻启动
+  if (xingyunReady.value && xingyunAvatar && !xingyunError.value) {
+    try {
+      speakWithXingyun(text)
+    } catch (e) {
+      console.warn('[Xingyun] lip-sync speak failed:', e)
+    }
+  }
+  // 播放后端 TTS 音频
+  if (hasAudio) {
+    audioEl.value!.play().catch(() => {})
+  } else if (!xingyunReady.value) {
+    // 星云不可用时兜底浏览器 TTS
+    speakWithBrowser(text, speed)
+  }
+}
+
+// 监听播报事件：speak 到达时仅记录状态，等待音频就绪后同步启动
 watch(
   () => store.speaking,
   (isSpeaking) => {
-    if (isSpeaking && store.speakingText) {
-      const speed = store.speakingSpeed || 1.0
-      // 始终先驱动嘴型（星云 SDK speak 只驱动嘴型/动作，SDK 音频已静音）
-      if (xingyunReady.value && xingyunAvatar && !xingyunError.value) {
-        try {
-          speakWithXingyun(store.speakingText)
-        } catch (e) {
-          console.warn('[Xingyun] lip-sync speak failed:', e)
+    if (!isSpeaking) {
+      clearSpeakFallback()
+      return
+    }
+    if (!store.speakingText) return
+    if (store.speakingAudioUrl) {
+      // speak 事件自带音频（同步模式）：立即同步启动
+      startSpeechSync()
+    } else {
+      // 异步模式：等待 audio_ready；4 秒内音频未就绪则兜底，避免播报卡死
+      clearSpeakFallback()
+      speakFallbackTimer = window.setTimeout(() => {
+        if (store.speaking && !store.speakingAudioUrl) {
+          startSpeechSync()
+          // 星云可用但 TTS 音频未就绪：补一段浏览器语音，避免只动嘴型无声
+          if (xingyunReady.value && !xingyunError.value && store.speakingText) {
+            speakWithBrowser(store.speakingText, store.speakingSpeed || 1.0)
+          }
         }
-      }
-      // 如果已有音频（非异步模式），直接播放
-      if (store.speakingAudioUrl && audioEl.value) {
-        audioEl.value.src = store.speakingAudioUrl
-        audioEl.value.playbackRate = speed
-        audioEl.value.play().catch(() => {})
-      } else if (!xingyunReady.value) {
-        // 星云不可用时兜底浏览器 TTS
-        speakWithBrowser(store.speakingText, speed)
-      }
+      }, 4000)
     }
   },
 )
 
-// 监听异步 TTS 音频就绪（digital_human.audio_ready 事件更新 speakingAudioUrl）
+// 异步 TTS 音频就绪（digital_human.audio_ready）：字幕、嘴型、音频同一时刻启动
 watch(
   () => store.speakingAudioUrl,
   (audioUrl) => {
-    if (audioUrl && store.speaking && audioEl.value) {
-      const speed = store.speakingSpeed || 1.0
-      audioEl.value.src = audioUrl
-      audioEl.value.playbackRate = speed
-      audioEl.value.play().catch(() => {})
+    if (audioUrl && store.speaking) {
+      clearSpeakFallback()
+      startSpeechSync()
     }
   },
 )
@@ -258,6 +300,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  clearSpeakFallback()
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel()
   }

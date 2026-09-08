@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 import BIcon from '@/components/BIcon.vue'
 import { useSessionStore } from '@/stores/session'

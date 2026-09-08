@@ -21,14 +21,14 @@ async function request<T>(path: string, options: RequestInit & { timeout?: numbe
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeout)
   try {
-    const resp = await fetch(${API_BASE}, {
+    const resp = await fetch(`${API_BASE}${path}`, {
       headers: { ...headers, ...(options.headers as Record<string, string>) },
       signal: controller.signal,
       ...options,
     })
     const data = await resp.json().catch(() => ({}))
     if (!resp.ok) {
-      throw new ApiError(data.code ?? 'ERR_1000', data.message ?? HTTP , data.details)
+      throw new ApiError(data.code ?? 'ERR_1000', data.message ?? `HTTP ${resp.status}`, data.details)
     }
     return data as T
   } catch (error) {

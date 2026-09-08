@@ -266,6 +266,22 @@ function startSpeechSync() {
   }
 }
 
+// 音频播放结束：停止数字人嘴型动作，确保音画同步
+function onAudioEnded() {
+  // 尝试停止星云 SDK 播报（如果 SDK 支持 stop 方法）
+  if (xingyunAvatar && typeof (xingyunAvatar as Record<string, unknown>).stop === 'function') {
+    try {
+      (xingyunAvatar as Record<string, () => void>).stop()
+    } catch (e) {
+      console.warn('[Xingyun] stop speak failed:', e)
+    }
+  }
+  // 浏览器 TTS 兜底：停止 speechSynthesis
+  if (window.speechSynthesis.speaking) {
+    window.speechSynthesis.cancel()
+  }
+}
+
 // 监听播报事件：speak 到达时仅记录状态，等待音频就绪后同步启动
 watch(
   () => store.speaking,
@@ -417,7 +433,7 @@ watch(
       </div>
     </div>
 
-    <audio ref="audioEl" hidden></audio>
+    <audio ref="audioEl" hidden @ended="onAudioEnded"></audio>
   </section>
 </template>
 

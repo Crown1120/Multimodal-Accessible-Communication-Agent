@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onUnmounted } from 'vue'
 
 import BIcon from '@/components/BIcon.vue'
+import { useSessionStore } from '@/stores/session'
+
+const store = useSessionStore()
+
+// 语音导航状态
+const navigating = ref(false)
+const currentStep = ref(-1)
+let navTimer: ReturnType<typeof setTimeout> | null = null
 
 const props = defineProps<{
   payload: Record<string, unknown>
@@ -119,6 +127,49 @@ const poiPts = computed(() => {
 
 const steps = computed<string[]>(() => (props.payload.steps as string[]) ?? [])
 const floor = computed<number | undefined>(() => props.payload.floor as number | undefined)
+
+// 语音导航：逐步播报路线步骤
+function startNavigation() {
+  if (steps.value.length === 0 || navigating.value) return
+  navigating.value = true
+  currentStep.value = 0
+  speakStep(0)
+}
+
+function speakStep(index: number) {
+  if (index >= steps.value.length) {
+    stopNavigation()
+    return
+  }
+  currentStep.value = index
+  const stepText = `第${index + 1}步，${steps.value[index]}`
+  // 使用 store.speak 播报，与数字人同步
+  if (typeof store.speak === 'function') {
+    store.speak(stepText)
+  } else {
+    // 兜底：浏览器 TTS
+    const utter = new SpeechSynthesisUtterance(stepText)
+    utter.lang = 'zh-CN'
+    utter.rate = 0.9
+    window.speechSynthesis.speak(utter)
+  }
+  // 每步间隔 4 秒（根据语速调整）
+  navTimer = setTimeout(() => speakStep(index + 1), 4000)
+}
+
+function stopNavigation() {
+  navigating.value = false
+  currentStep.value = -1
+  if (navTimer !== null) {
+    clearTimeout(navTimer)
+    navTimer = null
+  }
+  window.speechSynthesis.cancel()
+}
+
+onUnmounted(() => {
+  stopNavigation()
+})
 </script>
 
 <template>
@@ -129,6 +180,15 @@ const floor = computed<number | undefined>(() => props.payload.floor as number |
       </span>
       <span class="head-title">路线规划</span>
       <span v-if="floor" class="head-sub">{{ floor }} 楼</span>
+      <button
+        v-if="steps.length > 0"
+        class="nav-btn"
+        :class="{ active: navigating }"
+        @click="navigating ? stopNavigation() : startNavigation()"
+      >
+        <BIcon :name="navigating ? 'stop' : 'volume'" :size="13" />
+        {{ navigating ? '停止' : '语音导航' }}
+      </button>
     </div>
 
     <div class="endpoints">
@@ -242,9 +302,12 @@ const floor = computed<number | undefined>(() => props.payload.floor as number |
     </div>
 
     <ol class="steps">
-      <li v-for="(s, i) in steps" :key="i">
+      <li v-for="(s, i) in steps" :key="i" :class="{ current: currentStep === i }">
         <span class="step-num">{{ i + 1 }}</span>
         <span class="step-text">{{ s }}</span>
+        <span v-if="currentStep === i" class="step-speaking">
+          <BIcon name="volume" :size="12" />
+        </span>
       </li>
     </ol>
   </div>
@@ -526,5 +589,55 @@ const floor = computed<number | undefined>(() => props.payload.floor as number |
 }
 .step-text {
   flex: 1;
+}
+
+/* 语音导航按钮 */
+.nav-btn {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 0.78em;
+  font-weight: 600;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-primary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.nav-btn:hover {
+  background: var(--color-primary-soft);
+}
+.nav-btn.active {
+  background: var(--color-primary);
+  color: #fff;
+  animation: navPulse 1.2s ease-in-out infinite;
+}
+@keyframes navPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* 当前步骤高亮 */
+.steps li.current {
+  background: var(--color-primary-soft);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin: -6px -8px;
+}
+.steps li.current .step-num {
+  background: var(--color-primary);
+  color: #fff;
+}
+.step-speaking {
+  color: var(--color-primary);
+  flex-shrink: 0;
+  animation: speakingPulse 0.8s ease-in-out infinite;
+}
+@keyframes speakingPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.15); }
 }
 </style>

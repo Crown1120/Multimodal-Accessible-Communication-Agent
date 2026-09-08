@@ -16,6 +16,13 @@ class TestHealthEndpoint:
         assert data["status"] == "ok"
         assert "version" in data
         assert "adapters" in data
+        # 阶段4增强：运行时间与数据库连通性
+        assert "uptime_seconds" in data
+        assert isinstance(data["uptime_seconds"], (int, float))
+        assert data["uptime_seconds"] >= 0
+        assert "database" in data
+        assert data["database"]["type"] in ("sqlite", "postgresql")
+        assert data["database"]["connected"] is True
 
     @pytest.mark.asyncio
     async def test_health_contains_adapter_info(self, client):

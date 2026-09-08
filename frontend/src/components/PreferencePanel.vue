@@ -177,7 +177,9 @@ function toggle() {
   border: 1.5px solid var(--color-border-strong);
   background: var(--color-surface-2);
   padding: 0;
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 }
 .toggle-knob {
   position: absolute;

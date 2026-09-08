@@ -30,11 +30,7 @@ export type EventType =
 
 /** Widget 类型 */
 export type WidgetType =
-  | 'map_route'
-  | 'location'
-  | 'knowledge_source'
-  | 'task_result'
-  | 'translation'
+  'map_route' | 'location' | 'knowledge_source' | 'task_result' | 'translation'
 
 /** 统一事件载荷 */
 export interface BridgeEvent {

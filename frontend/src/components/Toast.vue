@@ -75,25 +75,33 @@ const iconMap: Record<string, string> = {
   border-left: 4px solid #ef4444;
   background: #fef2f2;
 }
-.toast-error .toast-icon { color: #ef4444; }
+.toast-error .toast-icon {
+  color: #ef4444;
+}
 
 .toast-warning {
   border-left: 4px solid #f59e0b;
   background: #fffbeb;
 }
-.toast-warning .toast-icon { color: #f59e0b; }
+.toast-warning .toast-icon {
+  color: #f59e0b;
+}
 
 .toast-info {
   border-left: 4px solid #3b82f6;
   background: #eff6ff;
 }
-.toast-info .toast-icon { color: #3b82f6; }
+.toast-info .toast-icon {
+  color: #3b82f6;
+}
 
 .toast-success {
   border-left: 4px solid #22c55e;
   background: #f0fdf4;
 }
-.toast-success .toast-icon { color: #22c55e; }
+.toast-success .toast-icon {
+  color: #22c55e;
+}
 
 /* 听障模式：高对比度 */
 [data-mode='hearing'] .toast {
@@ -101,7 +109,9 @@ const iconMap: Record<string, string> = {
   border-color: #ffd700;
   color: #fff;
 }
-[data-mode='hearing'] .toast-message { color: #fff; }
+[data-mode='hearing'] .toast-message {
+  color: #fff;
+}
 
 /* 老年模式：更大字体 */
 [data-mode='elderly'] .toast {

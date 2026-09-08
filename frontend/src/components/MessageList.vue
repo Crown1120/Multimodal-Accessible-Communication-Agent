@@ -45,7 +45,7 @@ function fmtTime(iso?: string): string {
 </script>
 
 <template>
-  <section class="message-list" ref="listRef" aria-label="消息区">
+  <section ref="listRef" class="message-list" aria-label="消息区">
     <div v-if="store.messages.length === 0" class="empty">
       <div class="empty-icon">
         <BIcon name="captions" :size="30" />
@@ -54,20 +54,18 @@ function fmtTime(iso?: string): string {
       <div class="empty-desc">输入文字、点击说话，或查看实时字幕，Bridge 将协助您完成沟通。</div>
     </div>
 
-    <div
-      v-for="m in store.messages"
-      :key="m.id"
-      class="row"
-      :class="roleClass(m)"
-    >
-      <div class="avatar" v-if="m.role !== 'user'">
-        <BIcon :name="m.role === 'assistant' ? 'sparkle' : m.role === 'staff' ? 'user' : 'cpu'" :size="17" />
+    <div v-for="m in store.messages" :key="m.id" class="row" :class="roleClass(m)">
+      <div v-if="m.role !== 'user'" class="avatar">
+        <BIcon
+          :name="m.role === 'assistant' ? 'sparkle' : m.role === 'staff' ? 'user' : 'cpu'"
+          :size="17"
+        />
       </div>
 
       <div class="bubble-wrap">
         <div class="meta">
           <span class="speaker">{{ speakerName(m) }}</span>
-          <span class="time" v-if="fmtTime(m.created_at)">{{ fmtTime(m.created_at) }}</span>
+          <span v-if="fmtTime(m.created_at)" class="time">{{ fmtTime(m.created_at) }}</span>
           <span v-if="m.send_status === 'failed'" class="send-status">发送失败</span>
         </div>
         <div class="bubble">
@@ -75,7 +73,7 @@ function fmtTime(iso?: string): string {
         </div>
       </div>
 
-      <div class="avatar user" v-if="m.role === 'user'">
+      <div v-if="m.role === 'user'" class="avatar user">
         <BIcon name="user" :size="17" />
       </div>
     </div>

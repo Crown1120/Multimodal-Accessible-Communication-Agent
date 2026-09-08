@@ -14,12 +14,7 @@ const mediaRecorder = ref<MediaRecorder | null>(null)
 const chunks = ref<Blob[]>([])
 
 function pickMime(): string {
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/ogg;codecs=opus',
-    'audio/mp4',
-  ]
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
   for (const m of candidates) {
     if (MediaRecorder.isTypeSupported(m)) return m
   }
@@ -80,22 +75,22 @@ const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]
       class="mic"
       :class="{ recording: store.recording }"
       :disabled="!store.sessionId"
-      @click="store.recording ? stop() : start()"
       :aria-pressed="store.recording"
       :title="store.recording ? '停止录音' : '开始说话'"
+      @click="store.recording ? stop() : start()"
     >
-      <span class="wave" v-if="store.recording" aria-hidden="true">
+      <span v-if="store.recording" class="wave" aria-hidden="true">
         <i v-for="(h, i) in waveBars" :key="i" :style="{ height: `${h * 100}%` }"></i>
       </span>
-      <span class="icon" v-else>
+      <span v-else class="icon">
         <BIcon name="mic" :size="20" />
       </span>
       <span class="label">{{ store.recording ? '停止' : '说话' }}</span>
     </button>
 
-    <div class="hint" v-if="store.recording && interimText">{{ interimText }}</div>
-    <div class="hint" v-else-if="store.recording">正在聆听…</div>
-    <div class="error" v-if="error" role="alert">{{ error }}</div>
+    <div v-if="store.recording && interimText" class="hint">{{ interimText }}</div>
+    <div v-else-if="store.recording" class="hint">正在聆听…</div>
+    <div v-if="error" class="error" role="alert">{{ error }}</div>
   </section>
 </template>
 

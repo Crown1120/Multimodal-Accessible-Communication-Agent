@@ -16,18 +16,18 @@ defineProps<{
     </div>
 
     <div
-      class="loc"
-      v-for="(loc, i) in ((payload.locations as Record<string, unknown>[]) ?? [])"
+      v-for="(loc, i) in (payload.locations as Record<string, unknown>[]) ?? []"
       :key="i"
+      class="loc"
     >
       <div class="name">
         <span class="loc-pin"><BIcon name="pin" :size="13" /></span>
         {{ loc.name }}
       </div>
       <div class="meta">
-        <span class="chip" v-if="loc.floor">楼层 {{ loc.floor }}</span>
-        <span class="chip" v-if="loc.area">{{ loc.area }}</span>
-        <span class="chip dir" v-if="loc.direction">{{ loc.direction }}</span>
+        <span v-if="loc.floor" class="chip">楼层 {{ loc.floor }}</span>
+        <span v-if="loc.area" class="chip">{{ loc.area }}</span>
+        <span v-if="loc.direction" class="chip dir">{{ loc.direction }}</span>
       </div>
     </div>
   </div>

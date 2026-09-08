@@ -43,15 +43,9 @@ export const useSessionStore = defineStore('session', () => {
   const isConnected = computed(() => status.value === 'connected')
 
   // 无障碍偏好：模式联动 + 独立覆盖
-  const isHighContrast = computed(
-    () => highContrast.value || mode.value === 'hearing',
-  )
-  const isLargeFont = computed(
-    () => fontSize.value === 'large' || mode.value !== 'standard',
-  )
-  const isSlowSpeech = computed(
-    () => speechRate.value === 'slow' || mode.value !== 'standard',
-  )
+  const isHighContrast = computed(() => highContrast.value || mode.value === 'hearing')
+  const isLargeFont = computed(() => fontSize.value === 'large' || mode.value !== 'standard')
+  const isSlowSpeech = computed(() => speechRate.value === 'slow' || mode.value !== 'standard')
 
   // 创建会话
   async function createSession() {
@@ -76,7 +70,11 @@ export const useSessionStore = defineStore('session', () => {
       scene.value = res.scene
       status.value = 'connected'
       // 持久化 sessionId，刷新页面后可恢复
-      try { localStorage.setItem('bridge_session_id', res.session_id) } catch { /* ignore */ }
+      try {
+        localStorage.setItem('bridge_session_id', res.session_id)
+      } catch {
+        /* ignore */
+      }
       subscribe()
       // 加载已保存的用户偏好
       await loadPreferences()
@@ -127,7 +125,7 @@ export const useSessionStore = defineStore('session', () => {
         agentDetail.value = (d.summary as string) ?? ''
         setTimeout(() => (agentStatus.value = 'idle'), 1500)
         break
-      case 'message.delta':
+      case 'message.delta': {
         // Use the run ID so interleaved or replayed events cannot update another reply.
         const deltaRunId = d.run_id as string | undefined
         let deltaMessage = deltaRunId
@@ -152,6 +150,7 @@ export const useSessionStore = defineStore('session', () => {
           transcriptSpeaker.value = 'assistant'
         }
         break
+      }
       case 'message.completed': {
         // 优先按 message_id 匹配；找不到则更新最后一条 assistant 消息（避免重复）
         const content = (d.content as string) ?? ''
@@ -198,10 +197,7 @@ export const useSessionStore = defineStore('session', () => {
       case 'digital_human.audio_ready':
         // 异步 TTS 音频就绪：仅接受当前播报 run_id 的音频，
         // 防止上一条消息的慢音频覆盖新播报
-        if (
-          speaking.value
-          && (!speakingRunId.value || d.run_id === speakingRunId.value)
-        ) {
+        if (speaking.value && (!speakingRunId.value || d.run_id === speakingRunId.value)) {
           speakingAudioUrl.value = (d.audio_url as string) ?? null
         }
         break
@@ -210,7 +206,8 @@ export const useSessionStore = defineStore('session', () => {
         const wId = d.widget_id as string
         const existing = widgets.value.find((x) => x.widget_id === wId)
         if (existing) {
-          existing.widget_type = (d.widget_type as WidgetData['widget_type']) ?? existing.widget_type
+          existing.widget_type =
+            (d.widget_type as WidgetData['widget_type']) ?? existing.widget_type
           existing.payload = (d.payload as Record<string, unknown>) ?? existing.payload
         } else {
           widgets.value.push({
@@ -265,7 +262,9 @@ export const useSessionStore = defineStore('session', () => {
   function flashNotification() {
     if (mode.value !== 'hearing') return
     flash.value = true
-    setTimeout(() => { flash.value = false }, 1500)
+    setTimeout(() => {
+      flash.value = false
+    }, 1500)
   }
 
   // 上传音频（ASR 转字幕 + 触发 Agent）
@@ -329,9 +328,7 @@ export const useSessionStore = defineStore('session', () => {
     fontSize.value = size
     applyAccessibilityAttrs()
     if (sessionId.value) {
-      api
-        .savePreferences(sessionId.value, { font_size: size })
-        .catch(() => {})
+      api.savePreferences(sessionId.value, { font_size: size }).catch(() => {})
     }
   }
 
@@ -339,9 +336,7 @@ export const useSessionStore = defineStore('session', () => {
     speechRate.value = rate
     applyAccessibilityAttrs()
     if (sessionId.value) {
-      api
-        .savePreferences(sessionId.value, { speech_rate: rate })
-        .catch(() => {})
+      api.savePreferences(sessionId.value, { speech_rate: rate }).catch(() => {})
     }
   }
 
@@ -349,9 +344,7 @@ export const useSessionStore = defineStore('session', () => {
     highContrast.value = on
     applyAccessibilityAttrs()
     if (sessionId.value) {
-      api
-        .savePreferences(sessionId.value, { high_contrast: on })
-        .catch(() => {})
+      api.savePreferences(sessionId.value, { high_contrast: on }).catch(() => {})
     }
   }
 
@@ -379,13 +372,21 @@ export const useSessionStore = defineStore('session', () => {
   // 恢复已有会话（刷新页面后自动恢复，无需重新创建）
   async function restoreSession(): Promise<boolean> {
     let savedId: string | null = null
-    try { savedId = localStorage.getItem('bridge_session_id') } catch { /* ignore */ }
+    try {
+      savedId = localStorage.getItem('bridge_session_id')
+    } catch {
+      /* ignore */
+    }
     if (!savedId) return false
     try {
       // 验证会话是否有效
       const session = await api.getSession(savedId)
       if (!session || session.status === 'closed') {
-        try { localStorage.removeItem('bridge_session_id') } catch { /* ignore */ }
+        try {
+          localStorage.removeItem('bridge_session_id')
+        } catch {
+          /* ignore */
+        }
         return false
       }
       // 恢复状态
@@ -405,13 +406,19 @@ export const useSessionStore = defineStore('session', () => {
           language: m.language,
           message_type: m.message_type as Message['message_type'],
         }))
-      } catch { /* 历史加载失败不阻断 */ }
+      } catch {
+        /* 历史加载失败不阻断 */
+      }
       subscribe()
       await loadPreferences()
       return true
     } catch {
       // 会话不存在或已失效，清除并返回 false
-      try { localStorage.removeItem('bridge_session_id') } catch { /* ignore */ }
+      try {
+        localStorage.removeItem('bridge_session_id')
+      } catch {
+        /* ignore */
+      }
       return false
     }
   }

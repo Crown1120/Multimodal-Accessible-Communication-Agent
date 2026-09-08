@@ -128,7 +128,7 @@ const floor = computed<number | undefined>(() => props.payload.floor as number |
         <BIcon name="map" :size="15" />
       </span>
       <span class="head-title">路线规划</span>
-      <span class="head-sub" v-if="floor">{{ floor }} 楼</span>
+      <span v-if="floor" class="head-sub">{{ floor }} 楼</span>
     </div>
 
     <div class="endpoints">
@@ -144,7 +144,7 @@ const floor = computed<number | undefined>(() => props.payload.floor as number |
     </div>
 
     <!-- SVG 室内平面图 + 路线线 -->
-    <div class="map-wrap" v-if="hasMap">
+    <div v-if="hasMap" class="map-wrap">
       <svg
         :viewBox="`0 0 ${VB_W} ${VB_H}`"
         class="floor-map"
@@ -156,7 +156,15 @@ const floor = computed<number | undefined>(() => props.payload.floor as number |
             <stop offset="0" stop-color="#eef5ff" />
             <stop offset="1" stop-color="#dfeafa" />
           </linearGradient>
-          <marker id="routeArrow" markerWidth="9" markerHeight="9" refX="7.5" refY="3.5" orient="auto" markerUnits="strokeWidth">
+          <marker
+            id="routeArrow"
+            markerWidth="9"
+            markerHeight="9"
+            refX="7.5"
+            refY="3.5"
+            orient="auto"
+            markerUnits="strokeWidth"
+          >
             <path d="M0,0 L8,3.5 L0,7 z" fill="#2563eb" />
           </marker>
         </defs>
@@ -165,14 +173,28 @@ const floor = computed<number | undefined>(() => props.payload.floor as number |
         <rect x="0" y="0" :width="VB_W" :height="VB_H" class="floor-bg" rx="12" />
         <!-- 网格 -->
         <g class="grid">
-          <line v-for="i in 6" :key="'v' + i" :x1="(VB_W / 7) * i" y1="0" :x2="(VB_W / 7) * i" :y2="VB_H" />
-          <line v-for="j in 4" :key="'h' + j" x1="0" :y1="(VB_H / 5) * j" :x2="VB_W" :y2="(VB_H / 5) * j" />
+          <line
+            v-for="i in 6"
+            :key="'v' + i"
+            :x1="(VB_W / 7) * i"
+            y1="0"
+            :x2="(VB_W / 7) * i"
+            :y2="VB_H"
+          />
+          <line
+            v-for="j in 4"
+            :key="'h' + j"
+            x1="0"
+            :y1="(VB_H / 5) * j"
+            :x2="VB_W"
+            :y2="(VB_H / 5) * j"
+          />
         </g>
         <!-- 示意图角标 -->
         <text x="14" y="20" class="map-caption">平面示意图</text>
 
         <!-- 全部科室节点（终点除外，由「终」标记覆盖） -->
-        <g class="poi" v-for="(p, i) in poiPts" :key="'p' + i">
+        <g v-for="(p, i) in poiPts" :key="'p' + i" class="poi">
           <circle :cx="p.pt.x" :cy="p.pt.y" r="4.2" class="poi-dot" />
           <text
             :x="p.pt.x + p.side * 7"
@@ -191,8 +213,8 @@ const floor = computed<number | undefined>(() => props.payload.floor as number |
         </g>
 
         <!-- 路线：光晕 + 主线（虚线流动）+ 终点箭头 -->
-        <path :d="pathD" class="route-glow" v-if="pathD" />
-        <path :d="pathD" class="route-line" v-if="pathD" marker-end="url(#routeArrow)" />
+        <path v-if="pathD" :d="pathD" class="route-glow" />
+        <path v-if="pathD" :d="pathD" class="route-line" marker-end="url(#routeArrow)" />
 
         <!-- 起点 -->
         <g v-if="originPt" class="marker from-marker">
@@ -335,7 +357,9 @@ const floor = computed<number | undefined>(() => props.payload.floor as number |
   height: auto;
   border-radius: 12px;
   border: 1px solid rgba(37, 99, 235, 0.14);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 3px 10px rgba(37, 99, 235, 0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 3px 10px rgba(37, 99, 235, 0.08);
 }
 .floor-bg {
   fill: url(#floorGrad);

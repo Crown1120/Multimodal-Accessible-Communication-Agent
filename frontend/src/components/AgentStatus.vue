@@ -32,8 +32,8 @@ const statusMeta = computed<{ label: string; icon: string }>(() => {
         <span class="dot" :class="store.agentStatus"></span>
         {{ statusMeta.label }}
       </div>
-      <div class="detail" v-if="store.agentDetail">{{ store.agentDetail }}</div>
-      <div class="detail idle" v-else>等待任务…</div>
+      <div v-if="store.agentDetail" class="detail">{{ store.agentDetail }}</div>
+      <div v-else class="detail idle">等待任务…</div>
     </div>
   </section>
 </template>

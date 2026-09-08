@@ -8,14 +8,7 @@ const store = useSessionStore()
 const text = ref('')
 
 // 医院导诊高频问题快捷按钮
-const quickQuestions = [
-  '挂号在哪',
-  '洗手间在哪',
-  '急诊怎么走',
-  '骨科在哪',
-  '取药处',
-  '缴费',
-]
+const quickQuestions = ['挂号在哪', '洗手间在哪', '急诊怎么走', '骨科在哪', '取药处', '缴费']
 
 async function send(content?: string) {
   const msg = (content ?? text.value).trim()
@@ -35,7 +28,7 @@ function onKeydown(e: KeyboardEvent) {
 <template>
   <section class="input-bar" aria-label="输入区">
     <!-- 常用问题快捷按钮 -->
-    <div class="quick-questions" v-if="store.sessionId">
+    <div v-if="store.sessionId" class="quick-questions">
       <button
         v-for="q in quickQuestions"
         :key="q"
@@ -50,17 +43,19 @@ function onKeydown(e: KeyboardEvent) {
     <div class="field" :class="{ 'is-sending': store.sending }">
       <textarea
         v-model="text"
-        :placeholder="store.sessionId ? (store.sending ? '回复中…' : '输入消息，回车发送') : '请先开始会话'"
+        :placeholder="
+          store.sessionId ? (store.sending ? '回复中…' : '输入消息，回车发送') : '请先开始会话'
+        "
         rows="1"
-        @keydown="onKeydown"
         :disabled="!store.sessionId || store.sending"
+        @keydown="onKeydown"
       ></textarea>
       <button
         class="send"
         :disabled="!text.trim() || !store.sessionId || store.sending"
-        @click="send()"
         aria-label="发送消息"
         title="发送 (Enter)"
+        @click="send()"
       >
         <BIcon v-if="!store.sending" name="send" :size="17" />
         <span v-else class="spinner" aria-label="发送中"></span>
@@ -120,7 +115,9 @@ function onKeydown(e: KeyboardEvent) {
   border: 1.5px solid var(--color-border);
   border-radius: var(--radius);
   padding: 8px 8px 8px 14px;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 .field:focus-within {
   border-color: var(--color-primary);
@@ -188,6 +185,8 @@ textarea:disabled {
   border-top-color: #000;
 }
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

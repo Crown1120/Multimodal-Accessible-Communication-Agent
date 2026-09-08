@@ -236,7 +236,6 @@ const statusInfo = computed(() => {
   border-color: transparent;
 }
 
-
 .start-btn {
   padding: 8px 18px;
 }
@@ -292,8 +291,13 @@ const statusInfo = computed(() => {
   animation: flash-border 0.5s ease-in-out 3;
 }
 @keyframes flash-border {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.2; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.2;
+  }
 }
 
 /* 视障/键盘导航增强：焦点环强化 */

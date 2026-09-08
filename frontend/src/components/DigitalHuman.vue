@@ -75,7 +75,11 @@ function loadXingyunSdk(): Promise<void> {
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${XINGYUN_SDK_URL}"]`)
     if (existing) {
       existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener('error', () => reject(new Error('星云 SDK 脚本加载失败，请检查网络')), { once: true })
+      existing.addEventListener(
+        'error',
+        () => reject(new Error('星云 SDK 脚本加载失败，请检查网络')),
+        { once: true },
+      )
       return
     }
     const script = document.createElement('script')
@@ -108,7 +112,12 @@ function hasRenderedXingyunCanvas(): boolean {
   try {
     const context = canvas.getContext('2d')
     if (context) {
-      const pixels = context.getImageData(0, 0, Math.min(canvas.width, 8), Math.min(canvas.height, 8)).data
+      const pixels = context.getImageData(
+        0,
+        0,
+        Math.min(canvas.width, 8),
+        Math.min(canvas.height, 8),
+      ).data
       return pixels.some((value) => value !== 0)
     }
   } catch {
@@ -299,9 +308,25 @@ watch(
 onMounted(async () => {
   // 等待 DOM 渲染完成，确保 v-if 的容器已挂载到 document
   await nextTick()
-  // 额外等一帧，确保 Vue 的 DOM patch 已提交
-  await new Promise((r) => setTimeout(r, 50))
-  void initXingyun()
+  // 首屏加速：等待浏览器空闲后再初始化数字人 SDK，
+  // 避免阻塞首屏渲染（SDK 体积大，初始化耗时可达数秒）
+  const idleInit = () => {
+    if (document.hidden) {
+      // 页面不可见时延迟到可见后再初始化
+      const onVisible = () => {
+        document.removeEventListener('visibilitychange', onVisible)
+        if (!document.hidden) void initXingyun()
+      }
+      document.addEventListener('visibilitychange', onVisible)
+      return
+    }
+    void initXingyun()
+  }
+  if ('requestIdleCallback' in window) {
+    ;(window as any).requestIdleCallback(idleInit, { timeout: 3000 })
+  } else {
+    setTimeout(idleInit, 200)
+  }
 })
 
 onUnmounted(() => {
@@ -336,7 +361,12 @@ watch(
     <div
       id="xingyun-avatar-container"
       class="xingyun-avatar"
-      :class="{ ready: xingyunReady && !xingyunError, loading: xingyunLoading, hidden: !xingyunConfigured, broken: Boolean(xingyunError) }"
+      :class="{
+        ready: xingyunReady && !xingyunError,
+        loading: xingyunLoading,
+        hidden: !xingyunConfigured,
+        broken: Boolean(xingyunError),
+      }"
       aria-label="魔珐星云3D数字人"
     >
       <!-- 顶部信息条（视频通话风格） -->
@@ -344,8 +374,8 @@ watch(
         <div class="video-id">
           <span class="live-dot"></span>
           <span class="video-name">Bridge 数字人</span>
-          <span class="video-tag" v-if="xingyunReady && !xingyunError">3D 已就绪</span>
-          <span class="video-tag warn" v-else-if="xingyunError">已降级</span>
+          <span v-if="xingyunReady && !xingyunError" class="video-tag">3D 已就绪</span>
+          <span v-else-if="xingyunError" class="video-tag warn">已降级</span>
         </div>
         <div class="video-status" :class="store.agentStatus">
           <BIcon :name="statusMeta.icon" :size="13" />
@@ -371,31 +401,34 @@ watch(
           <div class="skeleton-head"></div>
           <div class="skeleton-body"></div>
         </div>
-        <div class="xingyun-progress" v-if="xingyunLoading">
+        <div v-if="xingyunLoading" class="xingyun-progress">
           <div
             class="xingyun-progress-bar"
             :style="{ width: `${xingyunDownloadProgress ?? 0}%` }"
           ></div>
-          <span>{{ xingyunLoading ? (xingyunDownloadProgress ? `下载中 ${xingyunDownloadProgress}%` : '初始化数字人…') : '' }}</span>
+          <span>{{
+            xingyunLoading
+              ? xingyunDownloadProgress
+                ? `下载中 ${xingyunDownloadProgress}%`
+                : '初始化数字人…'
+              : ''
+          }}</span>
         </div>
       </div>
 
-      
-
       <!-- 重要信息确认提示（仅关键信息时出现） -->
-      <div class="repeat-hint" v-if="store.needRepeat">
+      <div v-if="store.needRepeat" class="repeat-hint">
         <BIcon name="bell" :size="14" />
         重要信息，请注意确认
       </div>
 
-      
-
       <!-- 服务信息：收纳在数字人画面右下方（只展示地点/路线等有用信息） -->
-      <div class="widget-dock" v-if="store.widgets.some((w) => w.widget_type !== 'knowledge_source')">
+      <div
+        v-if="store.widgets.some((w) => w.widget_type !== 'knowledge_source')"
+        class="widget-dock"
+      >
         <WidgetPanel />
       </div>
-
-
     </div>
 
     <audio ref="audioEl" hidden></audio>
@@ -466,8 +499,13 @@ watch(
   box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.5);
 }
 @keyframes livePulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.5); }
-  50% { box-shadow: 0 0 0 7px rgba(229, 72, 77, 0); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(229, 72, 77, 0);
+  }
 }
 .video-tag {
   font-size: 0.72em;
@@ -634,8 +672,12 @@ watch(
   animation: shimmer 1.8s ease-in-out infinite;
 }
 @keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 .xingyun-progress {
   display: flex;

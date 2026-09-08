@@ -15,9 +15,9 @@ const visibleWidgets = computed(() =>
   <!-- 精简版：只渲染 Widget 内容卡，去掉「服务信息」标题框与「知识来源」 -->
   <section class="widget-panel" aria-label="服务信息">
     <component
+      :is="widgetRegistry[w.widget_type] ?? 'div'"
       v-for="w in visibleWidgets"
       :key="w.widget_id"
-      :is="widgetRegistry[w.widget_type] ?? 'div'"
       class="widget-item"
       :payload="w.payload"
     >

@@ -18,7 +18,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isForm = options.body instanceof FormData
   const headers: Record<string, string> = isForm ? {} : { 'Content-Type': 'application/json' }
   const resp = await fetch(`${API_BASE}${path}`, {
-    headers: { ...headers, ...options.headers as Record<string, string> },
+    headers: { ...headers, ...(options.headers as Record<string, string>) },
     ...options,
   })
   const data = await resp.json().catch(() => ({}))
@@ -45,17 +45,17 @@ export const api = {
       body: JSON.stringify(payload),
     })
     if (!session.session_id) {
-      throw new ApiError(
-        'ERR_1000',
-        '后端返回的不是 Bridge 会话，请确认后端地址和端口配置正确',
-      )
+      throw new ApiError('ERR_1000', '后端返回的不是 Bridge 会话，请确认后端地址和端口配置正确')
     }
     return session as Session
   },
 
   getSession: (sessionId: string) => request<Session>(`/sessions/${sessionId}`),
 
-  sendMessage: (sessionId: string, payload: { role: string; content: string; message_type?: string }) =>
+  sendMessage: (
+    sessionId: string,
+    payload: { role: string; content: string; message_type?: string },
+  ) =>
     request<{ run_id: string }>(`/sessions/${sessionId}/messages`, {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -76,8 +76,7 @@ export const api = {
     })
   },
 
-  getMessages: (sessionId: string) =>
-    request<Message[]>(`/sessions/${sessionId}/messages`),
+  getMessages: (sessionId: string) => request<Message[]>(`/sessions/${sessionId}/messages`),
 
   getPreferences: (sessionId: string) =>
     request<Record<string, unknown> | null>(`/sessions/${sessionId}/preferences`),

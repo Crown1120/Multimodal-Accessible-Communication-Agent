@@ -16,7 +16,7 @@ defineProps<{
     </div>
 
     <div class="result">{{ payload.result }}</div>
-    <div class="src" v-if="payload.source">
+    <div v-if="payload.source" class="src">
       <BIcon name="book" :size="12" />
       原文：{{ payload.source }}
     </div>

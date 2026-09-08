@@ -287,6 +287,13 @@ export const useSessionStore = defineStore('session', () => {
   function setMode(m: Mode) {
     mode.value = m
     document.documentElement.setAttribute('data-mode', m)
+    // 强制重排：解决 CSS 变量变化时已存在元素样式不重新计算的浏览器优化问题
+    // 需等待 CSS 变量更新后（约 50ms）再触发重排
+    setTimeout(() => {
+      document.body.style.display = 'none'
+      void document.body.offsetHeight
+      document.body.style.display = ''
+    }, 50)
     // 模式联动默认值
     if (m === 'hearing') {
       fontSize.value = 'large'

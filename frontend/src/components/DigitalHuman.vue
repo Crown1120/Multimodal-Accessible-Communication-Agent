@@ -308,25 +308,9 @@ watch(
 onMounted(async () => {
   // 等待 DOM 渲染完成，确保 v-if 的容器已挂载到 document
   await nextTick()
-  // 首屏加速：等待浏览器空闲后再初始化数字人 SDK，
-  // 避免阻塞首屏渲染（SDK 体积大，初始化耗时可达数秒）
-  const idleInit = () => {
-    if (document.hidden) {
-      // 页面不可见时延迟到可见后再初始化
-      const onVisible = () => {
-        document.removeEventListener('visibilitychange', onVisible)
-        if (!document.hidden) void initXingyun()
-      }
-      document.addEventListener('visibilitychange', onVisible)
-      return
-    }
-    void initXingyun()
-  }
-  if ('requestIdleCallback' in window) {
-    ;(window as any).requestIdleCallback(idleInit, { timeout: 3000 })
-  } else {
-    setTimeout(idleInit, 200)
-  }
+  // 首屏加速：延迟一帧初始化数字人 SDK，避免阻塞首屏渲染
+  // （preload 已在 index.html 预下载 SDK 脚本，此处仅执行初始化）
+  setTimeout(() => void initXingyun(), 100)
 })
 
 onUnmounted(() => {

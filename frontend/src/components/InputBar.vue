@@ -6,6 +6,7 @@ import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
 const text = ref('')
+const micError = ref('')
 
 // 医院导诊高频问题快捷按钮
 const quickQuestions = ['挂号在哪', '洗手间在哪', '急诊怎么走', '骨科在哪', '取药处', '缴费']
@@ -23,6 +24,57 @@ function onKeydown(e: KeyboardEvent) {
     send()
   }
 }
+
+// ---- 录音上传 + 后端 ASR（MediaRecorder）----
+const mediaRecorder = ref<MediaRecorder | null>(null)
+const chunks = ref<Blob[]>([])
+
+function pickMime(): string {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
+  for (const m of candidates) {
+    if (MediaRecorder.isTypeSupported(m)) return m
+  }
+  return ''
+}
+
+async function startRecording() {
+  if (!store.sessionId || store.recording) return
+  micError.value = ''
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const mime = pickMime()
+    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
+    chunks.value = []
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.value.push(e.data)
+    }
+    recorder.onstop = async () => {
+      const audioBlob = new Blob(chunks.value, { type: mime || 'audio/webm' })
+      stream.getTracks().forEach((t) => t.stop())
+      await store.uploadAudio(audioBlob)
+    }
+    recorder.start()
+    mediaRecorder.value = recorder
+    store.recording = true
+  } catch {
+    micError.value = '无法访问麦克风，请检查浏览器权限或使用文字输入'
+    store.recording = false
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder.value && mediaRecorder.value.state === 'recording') {
+    mediaRecorder.value.stop()
+  }
+  store.recording = false
+}
+
+function toggleMic() {
+  if (store.recording) stopRecording()
+  else startRecording()
+}
+
+const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]
 </script>
 
 <template>
@@ -50,6 +102,20 @@ function onKeydown(e: KeyboardEvent) {
         :disabled="!store.sessionId || store.sending"
         @keydown="onKeydown"
       ></textarea>
+      <!-- 说话按钮：录音上传 + 后端 ASR -->
+      <button
+        class="mic-btn"
+        :class="{ recording: store.recording }"
+        :disabled="!store.sessionId || store.sending"
+        :aria-pressed="store.recording"
+        :title="store.recording ? '停止录音' : '开始说话'"
+        @click="toggleMic"
+      >
+        <span v-if="store.recording" class="mic-wave" aria-hidden="true">
+          <i v-for="(h, i) in waveBars" :key="i" :style="{ height: h * 100 + '%' }"></i>
+        </span>
+        <BIcon v-else name="mic" :size="18" />
+      </button>
       <button
         class="send"
         :disabled="!text.trim() || !store.sessionId || store.sending"
@@ -61,6 +127,7 @@ function onKeydown(e: KeyboardEvent) {
         <span v-else class="spinner" aria-label="发送中"></span>
       </button>
     </div>
+    <div v-if="micError" class="mic-error" role="alert">{{ micError }}</div>
   </section>
 </template>
 
@@ -144,6 +211,59 @@ textarea::placeholder {
 }
 textarea:disabled {
   cursor: not-allowed;
+}
+
+.mic-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface);
+  color: var(--color-primary);
+  border: 1.5px solid var(--color-border);
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
+}
+.mic-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+.mic-btn.recording {
+  background: var(--color-danger);
+  color: #fff;
+  border-color: var(--color-danger);
+  animation: recordPulse 1.4s ease-in-out infinite;
+}
+@keyframes recordPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.45); }
+  50% { box-shadow: 0 0 0 10px rgba(229, 72, 77, 0); }
+}
+.mic-wave {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+}
+.mic-wave i {
+  display: block;
+  width: 3px;
+  border-radius: 2px;
+  background: currentColor;
+  animation: micWave 0.9s ease-in-out infinite;
+}
+.mic-wave i:nth-child(2n) { animation-delay: 0.15s; }
+.mic-wave i:nth-child(3n) { animation-delay: 0.3s; }
+@keyframes micWave {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1); }
+}
+.mic-error {
+  color: var(--color-danger);
+  font-size: 0.82em;
+  margin-top: 6px;
+  text-align: center;
 }
 
 .send {

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from 'vue'
 
-import AudioInput from '@/components/AudioInput.vue'
 import BIcon from '@/components/BIcon.vue'
 import DigitalHuman from '@/components/DigitalHuman.vue'
 import InputBar from '@/components/InputBar.vue'
@@ -111,7 +110,6 @@ const statusInfo = computed(() => {
         <DigitalHuman />
         <div class="control-bar">
           <InputBar />
-          <AudioInput />
         </div>
       </section>
     </main>
@@ -125,10 +123,10 @@ const statusInfo = computed(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background:
+  background-color: var(--color-bg);
+  background-image:
     radial-gradient(900px 400px at 12% -8%, rgba(43, 108, 255, 0.08), transparent 60%),
-    radial-gradient(900px 400px at 92% -6%, rgba(14, 165, 183, 0.1), transparent 60%),
-    var(--color-bg);
+    radial-gradient(900px 400px at 92% -6%, rgba(14, 165, 183, 0.1), transparent 60%);
 }
 
 /* ===== 顶栏 ===== */
@@ -275,9 +273,6 @@ const statusInfo = computed(() => {
   border-top: 1px solid var(--color-border);
   background: var(--color-surface);
   flex-shrink: 0;
-}
-.control-bar > :deep(.input-bar) {
-  border-right: 1px solid var(--color-border);
 }
 
 /* 听障模式闪光通知：重要消息时页面边框闪烁 */

@@ -171,6 +171,7 @@ export const useSessionStore = defineStore('session', () => {
         }
         // 播报完成，清空实时字幕
         speaking.value = false
+        stopFlash()
         speakingText.value = ''
         speakingAudioUrl.value = null
         speakingRunId.value = null
@@ -258,13 +259,14 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  // 听障模式闪光通知：重要消息时触发页面边框闪烁
+  // 听障模式闪光通知：播报期间持续闪烁页面边框
   function flashNotification() {
     if (mode.value !== 'hearing') return
     flash.value = true
-    setTimeout(() => {
-      flash.value = false
-    }, 1500)
+  }
+  // 停止闪光通知
+  function stopFlash() {
+    flash.value = false
   }
 
   // 上传音频（ASR 转字幕 + 触发 Agent）
@@ -502,6 +504,7 @@ export const useSessionStore = defineStore('session', () => {
     sending,
     flash,
     flashNotification,
+    stopFlash,
     isHighContrast,
     isLargeFont,
     isSlowSpeech,

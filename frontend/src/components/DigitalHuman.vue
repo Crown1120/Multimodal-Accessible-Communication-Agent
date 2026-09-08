@@ -326,13 +326,15 @@ onUnmounted(() => {
 // 顶部状态：说话/思考/加载/待机
 const statusMeta = ref<{ icon: string; label: string }>({ icon: 'cpu', label: '待机' })
 watch(
-  () => [store.speaking, store.agentStatus, xingyunLoading] as const,
-  ([speaking, agentStatus, loading]) => {
+  () => [store.speaking, store.agentStatus, xingyunLoading.value, xingyunReady.value, xingyunError.value] as const,
+  ([speaking, agentStatus, loading, ready, error]) => {
     if (speaking) statusMeta.value = { icon: 'volume', label: '正在播报…' }
     else if (loading) statusMeta.value = { icon: 'refresh', label: '数字人加载中…' }
+    else if (error) statusMeta.value = { icon: 'alert', label: '已降级' }
     else if (agentStatus === 'thinking') statusMeta.value = { icon: 'sparkle', label: '思考中…' }
     else if (agentStatus === 'running') statusMeta.value = { icon: 'cpu', label: '处理中…' }
     else if (agentStatus === 'failed') statusMeta.value = { icon: 'alert', label: '异常' }
+    else if (ready) statusMeta.value = { icon: 'check', label: '在线' }
     else statusMeta.value = { icon: 'cpu', label: '待机' }
   },
   { immediate: true },

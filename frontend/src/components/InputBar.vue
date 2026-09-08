@@ -7,15 +7,40 @@ import { useSessionStore } from '@/stores/session'
 const store = useSessionStore()
 const text = ref('')
 const micError = ref('')
+const sendError = ref('')
+const lastContent = ref('')
 
 // 医院导诊高频问题快捷按钮
-const quickQuestions = ['挂号在哪', '洗手间在哪', '急诊怎么走', '骨科在哪', '取药处', '缴费']
+const quickQuestions = computed(() => {
+  if (store.mode === 'elderly') {
+    return ['挂号在哪', '洗手间在哪', '急诊怎么走', '取药处']
+  }
+  return ['挂号在哪', '洗手间在哪', '急诊怎么走', '骨科在哪', '取药处', '缴费']
+})
 
 async function send(content?: string) {
   const msg = (content ?? text.value).trim()
   if (!msg || !store.sessionId || store.sending) return
   if (content === undefined) text.value = ''
-  await store.sendMessage(msg)
+  sendError.value = ''
+  lastContent.value = msg
+  try {
+    await store.sendMessage(msg)
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : '发送失败，请稍后重试'
+    sendError.value = errMsg
+    store.lastError = errMsg
+  }
+}
+
+function retrySend() {
+  if (lastContent.value) send(lastContent.value)
+}
+
+function repeatLast() {
+  if (store.speakingText) {
+    store.speak(store.speakingText)
+  }
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -90,6 +115,14 @@ const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]
       >
         {{ q }}
       </button>
+      <button
+        v-if="store.mode === 'elderly' && store.speakingText"
+        class="quick-btn repeat-btn"
+        :disabled="store.sending"
+        @click="repeatLast"
+      >
+        重复一遍
+      </button>
     </div>
 
     <div class="field" :class="{ 'is-sending': store.sending }">
@@ -128,6 +161,10 @@ const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]
       </button>
     </div>
     <div v-if="micError" class="mic-error" role="alert">{{ micError }}</div>
+    <div v-if="sendError" class="send-error" role="alert">
+      <span>{{ sendError }}</span>
+      <button class="retry-btn" @click="retrySend">重试</button>
+    </div>
   </section>
 </template>
 
@@ -161,6 +198,17 @@ const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]
   border-color: var(--color-primary);
   color: var(--color-primary);
   background: var(--color-primary-soft);
+}
+
+.repeat-btn {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.repeat-btn:hover:not(:disabled) {
+  border-color: var(--color-success);
+  background: var(--color-success);
+  color: #fff;
 }
 .quick-btn:disabled {
   opacity: 0.5;
@@ -264,6 +312,32 @@ textarea:disabled {
   font-size: 0.82em;
   margin-top: 6px;
   text-align: center;
+}
+
+.send-error {
+  margin-top: 6px;
+  font-size: 0.82em;
+  color: var(--color-danger);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.retry-btn {
+  padding: 2px 10px;
+  font-size: 0.82em;
+  border: 1px solid var(--color-danger);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-danger);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.retry-btn:hover {
+  background: var(--color-danger);
+  color: #fff;
 }
 
 .send {

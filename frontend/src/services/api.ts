@@ -14,19 +14,33 @@ class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit & { timeout?: number } = {}): Promise<T> {
   const isForm = options.body instanceof FormData
   const headers: Record<string, string> = isForm ? {} : { 'Content-Type': 'application/json' }
-  const resp = await fetch(`${API_BASE}${path}`, {
-    headers: { ...headers, ...(options.headers as Record<string, string>) },
-    ...options,
-  })
-  const data = await resp.json().catch(() => ({}))
-  if (!resp.ok) {
-    throw new ApiError(data.code ?? 'ERR_1000', data.message ?? `HTTP ${resp.status}`, data.details)
+  const timeout = options.timeout ?? 30000
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
+  try {
+    const resp = await fetch(${API_BASE}, {
+      headers: { ...headers, ...(options.headers as Record<string, string>) },
+      signal: controller.signal,
+      ...options,
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      throw new ApiError(data.code ?? 'ERR_1000', data.message ?? HTTP , data.details)
+    }
+    return data as T
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiError('ERR_TIMEOUT', '请求超时，请检查网络连接或稍后重试')
+    }
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
   }
-  return data as T
 }
+
 
 export interface AudioTranscribeResult {
   session_id: string

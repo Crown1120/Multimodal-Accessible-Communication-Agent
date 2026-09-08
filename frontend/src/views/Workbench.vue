@@ -283,7 +283,7 @@ const statusInfo = computed(() => {
   border: 6px solid #ffd700;
   pointer-events: none;
   z-index: 9998;
-  animation: flash-border 0.5s ease-in-out 3;
+  animation: flash-border 0.6s ease-in-out infinite;
 }
 @keyframes flash-border {
   0%,

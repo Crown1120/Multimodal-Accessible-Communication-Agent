@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.mcp.registry import Tool, registry
 
 # 医院/政务地点模拟数据
@@ -29,6 +27,14 @@ _GOVERNMENT_LOCATIONS: dict[str, dict] = {
 # 起点（大厅入口）坐标
 _ORIGIN_COORD = [121.4730, 31.2303]
 
+# 无障碍设施数据（轮椅模式使用）
+_ACCESSIBILITY_FACILITIES: dict[str, dict] = {
+    "无障碍洗手间": {"floor": 1, "area": "大厅西侧", "coord": [121.4726, 31.2305], "type": "restroom"},
+    "无障碍电梯": {"floor": 1, "area": "大厅中部", "coord": [121.4735, 31.2304], "type": "elevator"},
+    "坡道入口": {"floor": 1, "area": "医院东门", "coord": [121.4740, 31.2303], "type": "ramp"},
+    "轮椅租借处": {"floor": 1, "area": "服务台旁", "coord": [121.4732, 31.2302], "type": "wheelchair_rental"},
+}
+
 # 翻译词典（演示用）
 _TRANSLATE_DICT = {
     "骨科": "Orthopedics",
@@ -45,6 +51,7 @@ _TRANSLATE_DICT = {
 
 
 def _locations_for(scene: str) -> dict[str, dict]:
+    """按场景返回地点表（医院 / 政务）。"""
     return _GOVERNMENT_LOCATIONS if scene == "government" else _HOSPITAL_LOCATIONS
 
 
@@ -53,7 +60,7 @@ class ServiceQueryTool(Tool):
     description = "查询医院/政务服务的服务点位置信息"
 
     async def run(self, keyword: str = "", scene: str = "hospital") -> dict:
-        table = _HOSPITAL_LOCATIONS if scene == "hospital" else _GOVERNMENT_LOCATIONS
+        table = _locations_for(scene)
         if keyword and keyword in table:
             info = table[keyword]
             payload = {
@@ -75,8 +82,8 @@ class RouteQueryTool(Tool):
     name = "route_query"
     description = "查询从起点到终点的路线（模拟）"
 
-    async def run(self, origin: str = "大厅入口", destination: str = "", scene: str = "hospital") -> dict:
-        table = _HOSPITAL_LOCATIONS if scene == "hospital" else _GOVERNMENT_LOCATIONS
+    async def run(self, origin: str = "大厅入口", destination: str = "", scene: str = "hospital", wheelchair: bool = False) -> dict:
+        table = _locations_for(scene)
         dest_info = table.get(destination)
         if not dest_info:
             return {
@@ -85,13 +92,41 @@ class RouteQueryTool(Tool):
             }
         floor = dest_info["floor"]
         direction = dest_info["direction"]
-        steps = [
-            f"从 {origin} 出发",
-            f"前往一楼大厅",
-            f"乘电梯到 {floor} 楼",
-            f"向 {direction} 前行约 50 米",
-            f"到达 {destination}（{dest_info['area']}）",
-        ]
+        # 轮椅模式：生成无障碍路线，优先电梯和坡道，标注无障碍设施
+        if wheelchair:
+            if floor <= 1:
+                steps = [
+                    f"从 {origin} 出发（轮椅友好通道）",
+                    "沿无障碍通道前行，途经坡道入口",
+                    f"向 {direction} 前行约 50 米",
+                    f"到达 {destination}（{dest_info['area']}）",
+                    "沿途设有无障碍洗手间",
+                ]
+            else:
+                steps = [
+                    f"从 {origin} 出发（轮椅友好通道）",
+                    "前往无障碍电梯（大厅中部）",
+                    f"乘无障碍电梯到 {floor} 楼",
+                    f"向 {direction} 前行约 50 米",
+                    f"到达 {destination}（{dest_info['area']}）",
+                    "电梯出口设有无障碍洗手间",
+                ]
+        else:
+            # 目的地在一楼时不需要「乘电梯上楼」，避免给出错误指引
+            if floor <= 1:
+                steps = [
+                    f"从 {origin} 出发",
+                    f"向 {direction} 前行约 50 米",
+                    f"到达 {destination}（{dest_info['area']}）",
+                ]
+            else:
+                steps = [
+                    f"从 {origin} 出发",
+                    "前往一楼大厅",
+                    f"乘电梯到 {floor} 楼",
+                    f"向 {direction} 前行约 50 米",
+                    f"到达 {destination}（{dest_info['area']}）",
+                ]
         # 生成示意路线折线（起点 → 大厅中轴 → 电梯 → 目的地）
         ox, oy = _ORIGIN_COORD
         dx, dy = dest_info["coord"]
@@ -101,6 +136,13 @@ class RouteQueryTool(Tool):
             {"name": k, "coord": v["coord"], "floor": v["floor"]}
             for k, v in table.items()
         ]
+        # 轮椅模式下添加无障碍设施标注
+        accessibility_pois = []
+        if wheelchair:
+            accessibility_pois = [
+                {"name": k, "coord": v["coord"], "floor": v["floor"], "type": v["type"], "accessibility": True}
+                for k, v in _ACCESSIBILITY_FACILITIES.items()
+            ]
         payload = {
             "origin": origin,
             "destination": destination,
@@ -110,6 +152,8 @@ class RouteQueryTool(Tool):
             "dest_coord": dest_info["coord"],
             "path": path,
             "pois": pois,
+            "wheelchair": wheelchair,
+            "accessibility_facilities": accessibility_pois,
         }
         return {"tool": self.name, "result": payload, "widget": {"widget_type": "map_route", "payload": payload}}
 
@@ -119,7 +163,7 @@ class MapQueryTool(Tool):
     description = "查询地点在地图上的位置"
 
     async def run(self, location: str = "", scene: str = "hospital") -> dict:
-        table = _HOSPITAL_LOCATIONS if scene == "hospital" else _GOVERNMENT_LOCATIONS
+        table = _locations_for(scene)
         info = table.get(location)
         if not info:
             return {"tool": self.name, "result": {"error": f"未找到地点：{location}"}}
@@ -140,7 +184,7 @@ class TranslateTool(Tool):
             adapter = get_translator_adapter()
             result = await adapter.translate(text, source_lang=source_lang, target_lang=target_lang)
             out = result.text
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             # 降级到词典
             if target_lang == "en":
                 out = _translate_zh_en(text)

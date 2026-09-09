@@ -1,9 +1,24 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import BIcon from '@/components/BIcon.vue'
 
-defineProps<{
+const props = defineProps<{
   payload: Record<string, unknown>
 }>()
+
+// 语言标签按 payload 的 source_lang / target_lang 显示。
+// 旧实现把两行写死成「中文 / English」，当用户要求「翻译成中文」（英→中）时
+// 标签会完全反过来，把译文标成英文。
+const LANG_LABELS: Record<string, string> = { zh: '中文', en: 'English' }
+
+function labelOf(value: unknown, fallback: string): string {
+  const code = typeof value === 'string' && value ? value : fallback
+  return LANG_LABELS[code] ?? code
+}
+
+const sourceLabel = computed(() => labelOf(props.payload.source_lang, 'zh'))
+const targetLabel = computed(() => labelOf(props.payload.target_lang, 'en'))
 </script>
 
 <template>
@@ -12,16 +27,16 @@ defineProps<{
       <span class="head-icon">
         <BIcon name="globe" :size="15" />
       </span>
-      <span class="head-title">中英翻译</span>
+      <span class="head-title">翻译</span>
     </div>
 
     <div class="pair">
       <div class="row">
-        <span class="lang">中文</span>
+        <span class="lang">{{ sourceLabel }}</span>
         <span class="text">{{ payload.source as string }}</span>
       </div>
       <div class="row en-row">
-        <span class="lang">English</span>
+        <span class="lang">{{ targetLabel }}</span>
         <span class="text en">{{ payload.result as string }}</span>
       </div>
     </div>

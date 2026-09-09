@@ -7,28 +7,38 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 class ApiError extends Error {
   code: string
   details?: Record<string, unknown>
-  constructor(code: string, message: string, details?: Record<string, unknown>) {
+  status?: number
+  constructor(code: string, message: string, details?: Record<string, unknown>, status?: number) {
     super(message)
     this.code = code
     this.details = details
+    this.status = status
   }
 }
 
-async function request<T>(path: string, options: RequestInit & { timeout?: number } = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  { timeout = 30000, headers: extraHeaders, ...options }: RequestInit & { timeout?: number } = {},
+): Promise<T> {
   const isForm = options.body instanceof FormData
   const headers: Record<string, string> = isForm ? {} : { 'Content-Type': 'application/json' }
-  const timeout = options.timeout ?? 30000
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeout)
   try {
+    // 注意：options 已被解构（headers/timeout 已剔除），这里再展开不会覆盖上面的 headers
     const resp = await fetch(`${API_BASE}${path}`, {
-      headers: { ...headers, ...(options.headers as Record<string, string>) },
-      signal: controller.signal,
       ...options,
+      headers: { ...headers, ...(extraHeaders as Record<string, string> | undefined) },
+      signal: controller.signal,
     })
     const data = await resp.json().catch(() => ({}))
     if (!resp.ok) {
-      throw new ApiError(data.code ?? 'ERR_1000', data.message ?? `HTTP ${resp.status}`, data.details)
+      throw new ApiError(
+        data.code ?? 'ERR_1000',
+        data.message ?? `HTTP ${resp.status}`,
+        data.details,
+        resp.status,
+      )
     }
     return data as T
   } catch (error) {
@@ -46,12 +56,29 @@ export interface AudioTranscribeResult {
   session_id: string
   text: string
   message_id?: string
+  run_id?: string | null
   ok: boolean
   asr_adapter?: string | null
 }
 
+export interface SendMessageResult {
+  run_id: string
+  message_id: string
+}
+
+export interface PublicConfig {
+  xingyun_app_id: string
+  xingyun_app_secret: string
+  xingyun_gateway: string
+  max_message_length: number
+  max_upload_mb: number
+}
+
 export const api = {
   health: () => request<{ status: string; version: string; environment: string }>('/health'),
+
+  /** 运行时公开配置（数字人凭据等），避免把凭据内联进静态产物 */
+  getPublicConfig: () => request<PublicConfig>('/config/public'),
 
   createSession: async (payload: { scene?: Scene; mode?: Mode; user_id?: string | null }) => {
     const session = await request<Partial<Session>>('/sessions', {
@@ -68,9 +95,9 @@ export const api = {
 
   sendMessage: (
     sessionId: string,
-    payload: { role: string; content: string; message_type?: string },
+    payload: { role: string; content: string; message_type?: string; wheelchair?: boolean },
   ) =>
-    request<{ run_id: string }>(`/sessions/${sessionId}/messages`, {
+    request<SendMessageResult>(`/sessions/${sessionId}/messages`, {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -85,6 +112,15 @@ export const api = {
     if (opts.speaker) form.append('speaker', opts.speaker)
     if (opts.language) form.append('language', opts.language)
     return request<AudioTranscribeResult>(`/sessions/${sessionId}/audio`, {
+      method: 'POST',
+      body: form,
+    })
+  },
+
+  analyzeImage: (sessionId: string, imageFile: File) => {
+    const form = new FormData()
+    form.append('image', imageFile, 'report.jpg')
+    return request<{ analysis: string; summary: string }>(`/sessions/${sessionId}/analyze-image`, {
       method: 'POST',
       body: form,
     })

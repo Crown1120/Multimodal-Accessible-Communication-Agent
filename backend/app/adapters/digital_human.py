@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.adapters.tts import get_tts_adapter
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.adapters.tts import TTSResult, get_tts_adapter
 
 logger = get_logger()
 
@@ -68,6 +68,21 @@ class SpeakPayload(dict):
 
 
 class DigitalHumanAdapter(Protocol):
+    """数字人统一接口。
+
+    runner 会用到 `build_speak_payload`（先推文本再异步合成音频）与
+    `synthesize_audio`，此前协议里没有声明这两个方法，
+    导致类型检查无法发现适配器实现缺失。
+    """
+
+    def build_speak_payload(
+        self,
+        text: str,
+        *,
+        emotion: str | None = None,
+        mode: str = "standard",
+    ) -> dict: ...
+
     async def speak(
         self,
         text: str,
@@ -76,12 +91,42 @@ class DigitalHumanAdapter(Protocol):
         mode: str = "standard",
     ) -> dict: ...
 
+    async def synthesize_audio(self, text: str, *, speed: float = 1.0) -> str | None: ...
+
 
 class MinimalDigitalHumanAdapter:
     """最小数字人：根据内容推断情感与动作，结合 TTS 与模式自适应语速。"""
 
     def __init__(self) -> None:
         self._tts = get_tts_adapter()
+
+    def build_speak_payload(
+        self,
+        text: str,
+        *,
+        emotion: str | None = None,
+        mode: str = "standard",
+    ) -> dict:
+        """构造不含音频的 speak 载荷（纯函数，不做任何 IO）。
+
+        原实现在 runner 里通过临时把 `_tts` 换成 Noop 来复用这段推断逻辑，
+        属于对私有属性的猴子补丁；这里显式暴露为方法，语义更清晰也不会
+        在多协程下互相干扰。
+        """
+        if emotion is None:
+            emotion = self._infer_emotion(text)
+        payload: dict = {
+            "text": text,
+            "audio_url": None,
+            "emotion": emotion,
+            "expression": self._infer_expression(text),
+            "gesture": self._infer_gesture(text),
+            "speed": self._speed_for_mode(mode),
+            "mode": mode,
+        }
+        if self._should_repeat(text, mode):
+            payload["repeat"] = True
+        return payload
 
     async def speak(
         self,
@@ -90,51 +135,37 @@ class MinimalDigitalHumanAdapter:
         emotion: str | None = None,
         mode: str = "standard",
     ) -> dict:
-        if emotion is None:
-            emotion = self._infer_emotion(text)
-
-        # 根据模式决定语速
-        speed = self._speed_for_mode(mode)
-
-        # 重要信息重复确认（听障/老年模式）
-        repeat = self._should_repeat(text, mode)
-
-        # 推断手势动作与表情
-        gesture = self._infer_gesture(text)
-        expression = self._infer_expression(text)
+        payload = self.build_speak_payload(text, emotion=emotion, mode=mode)
 
         # TTS 合成（Mock 时返回 None，不阻断流程）
-        audio_url = None
         try:
-            tts_result = await self._tts.synthesize(text, speed=speed)
+            tts_result = await self._tts.synthesize(text, speed=payload["speed"])
             if tts_result.audio:
-                audio_url = "data:audio/mpeg;base64," + _to_b64(tts_result.audio)
+                payload["audio_url"] = await _store_audio(tts_result.audio, tts_result.mime)
         except Exception as e:  # noqa: BLE001
             logger.warning("TTS 合成失败，降级为纯文本播报：{}", e)
 
-        payload: dict = {
-            "text": text,
-            "audio_url": audio_url,
-            "emotion": emotion,
-            "expression": expression,
-            "gesture": gesture,
-            "speed": speed,
-            "mode": mode,
-        }
-        if repeat:
-            payload["repeat"] = True
         return payload
 
     async def synthesize_audio(self, text: str, *, speed: float = 1.0) -> str | None:
-        """仅合成音频，返回 base64 data URL（用于异步 TTS，先推送文本再推送音频）。
-        相同文本+语速命中缓存时直接返回，避免重复合成。"""
+        """仅合成音频，返回音频访问 URL（用于异步 TTS，先推送文本再推送音频）。
+        相同文本+语速命中缓存时直接返回，避免重复合成。
+
+        返回形如 `/api/audio/{audio_id}` 的短路径，而不是 base64 data URL——
+        避免 SSE 帧膨胀与事件重放缓冲长期持有音频。
+        """
         cache_key = f"{speed}:{text}"
-        if cache_key in _tts_cache:
-            return _tts_cache[cache_key]
+        cached = _tts_cache.get(cache_key)
+        if cached is not None:
+            # 音频存储容量比 TTS 缓存小，命中缓存不代表音频还在——
+            # 直接返回已被淘汰的 URL 会让前端拿到 404、数字人静音。
+            if await _audio_exists(cached):
+                return cached
+            _tts_cache.pop(cache_key, None)
         try:
             tts_result = await self._tts.synthesize(text, speed=speed)
             if tts_result.audio:
-                audio_url = "data:audio/mpeg;base64," + _to_b64(tts_result.audio)
+                audio_url = await _store_audio(tts_result.audio, tts_result.mime)
                 # 简单 LRU：超过上限时淘汰最早的一半
                 if len(_tts_cache) >= _TTS_CACHE_MAX:
                     for k in list(_tts_cache.keys())[: _TTS_CACHE_MAX // 2]:
@@ -188,10 +219,20 @@ _tts_cache: dict[str, str] = {}
 _TTS_CACHE_MAX = 200
 
 
-def _to_b64(data: bytes) -> str:
-    import base64
+async def _store_audio(data: bytes, mime: str) -> str:
+    """把音频存入 audio_store，返回可访问的短 URL。"""
+    from app.services.audio_store import audio_store
 
-    return base64.b64encode(data).decode("ascii")
+    audio_id = await audio_store.put(data, mime=mime)
+    return f"/api/audio/{audio_id}"
+
+
+async def _audio_exists(audio_url: str) -> bool:
+    """缓存里的 URL 对应音频是否仍在存储中。"""
+    from app.services.audio_store import audio_store
+
+    audio_id = audio_url.rsplit("/", 1)[-1]
+    return await audio_store.get(audio_id) is not None
 
 
 def get_digital_human_adapter() -> DigitalHumanAdapter:

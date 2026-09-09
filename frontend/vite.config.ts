@@ -29,5 +29,18 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    build: {
+      // 拆包：框架单独成 chunk，避免首屏加载一个巨大的 bundle。
+      // Vite 8（rolldown）只支持函数形式的 manualChunks。
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (/node_modules\/(vue|vue-router|pinia|@vue)\//.test(id)) return 'vendor-vue'
+            return undefined
+          },
+        },
+      },
+      chunkSizeWarningLimit: 800,
+    },
   }
 })

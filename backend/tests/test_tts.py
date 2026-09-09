@@ -93,7 +93,7 @@ class TestVolcEngineNDJSON:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("app.adapters.tts.httpx.AsyncClient", return_value=mock_client):
+        with patch("app.adapters.tts.get_http_client", return_value=mock_client):
             result = await adapter.synthesize("你好")
             assert result.audio == audio_data
             assert result.mime == "audio/mpeg"
@@ -112,7 +112,7 @@ class TestVolcEngineNDJSON:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("app.adapters.tts.httpx.AsyncClient", return_value=mock_client):
+        with patch("app.adapters.tts.get_http_client", return_value=mock_client):
             with pytest.raises(AdapterError):
                 await adapter.synthesize("你好")
 
@@ -130,7 +130,7 @@ class TestVolcEngineNDJSON:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("app.adapters.tts.httpx.AsyncClient", return_value=mock_client):
+        with patch("app.adapters.tts.get_http_client", return_value=mock_client):
             with pytest.raises(AdapterError):
                 await adapter.synthesize("你好")
 
@@ -148,7 +148,7 @@ class TestVolcEngineNDJSON:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("app.adapters.tts.httpx.AsyncClient", return_value=mock_client):
+        with patch("app.adapters.tts.get_http_client", return_value=mock_client):
             with pytest.raises(AdapterError, match="音频为空"):
                 await adapter.synthesize("你好")
 

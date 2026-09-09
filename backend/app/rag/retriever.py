@@ -17,6 +17,9 @@ logger = get_logger()
 # 置信度阈值（余弦/Chroma 距离换算后）
 LOW_CONFIDENCE = 0.15
 
+# 跨场景通用文档的 scene 标记（无障碍、交通等信息对医院与政务都适用）
+GENERAL_SCENE = "general"
+
 
 class RAGRetriever:
     def __init__(self, store: VectorStore | None = None) -> None:
@@ -25,15 +28,23 @@ class RAGRetriever:
         self._index_lock = asyncio.Lock()
 
     async def _ensure_indexed(self) -> None:
+        """确保索引已构建。
+
+        只有索引**成功**才置位 `_indexed`：旧实现在 finally 里无条件置位，
+        一次瞬时失败（磁盘抖动、目录权限）就会让 RAG 永久静默失效，
+        而健康检查还会谎报 ready。
+        """
         if self._indexed:
             return
-        try:
-            count = await index_knowledge(self.store)
-            logger.info("RAG 初始索引完成，文档块数={}", count)
-        except Exception as e:  # noqa: BLE001
-            logger.exception("RAG 初始索引失败：{}", e)
-        finally:
-            self._indexed = True
+        async with self._index_lock:
+            if self._indexed:  # 双重检查：等锁期间可能已被其他请求完成
+                return
+            try:
+                count = await index_knowledge(self.store)
+                logger.info("RAG 初始索引完成，文档块数={}", count)
+                self._indexed = True
+            except Exception as e:  # noqa: BLE001
+                logger.exception("RAG 初始索引失败（下次请求将重试）：{}", e)
 
     async def retrieve(
         self,
@@ -43,12 +54,13 @@ class RAGRetriever:
         language: str = "zh",
         k: int = 4,
     ) -> list[Document]:
-        async with self._index_lock:
-            await self._ensure_indexed()
-            where: dict[str, str] = {"language": language}
-            if scene:
-                where["scene"] = scene
-            return await self.store.query(query, k=k, where=where)
+        # 锁只用于保护索引构建，不覆盖查询，避免所有并发检索被串行化
+        await self._ensure_indexed()
+        where: dict[str, str | list[str]] = {"language": language}
+        if scene:
+            # 同时召回本场景与跨场景通用文档（如无障碍服务说明）
+            where["scene"] = [scene, GENERAL_SCENE]
+        return await self.store.query(query, k=k, where=where)
 
     async def reindex(self) -> int:
         """Replace the current index without exposing implementation details."""

@@ -67,7 +67,9 @@ class AgentRun(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
     intent: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="running")  # running / completed / failed
+    # running / completed / failed / timeout / abandoned
+    # （abandoned：进程被强杀导致后台任务丢失，启动时回收）
+    status: Mapped[str] = mapped_column(String(32), default="running")
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 

@@ -127,6 +127,10 @@ const poiPts = computed(() => {
 
 const steps = computed<string[]>(() => (props.payload.steps as string[]) ?? [])
 const floor = computed<number | undefined>(() => props.payload.floor as number | undefined)
+const wheelchair = computed<boolean>(() => (props.payload.wheelchair as boolean) ?? false)
+const currentFloor = ref<number>(1) // 当前显示楼层（3D地图楼层切换）
+const show3D = ref<boolean>(false) // 是否启用3D透视效果
+const accessibilityFacilities = computed(() => (props.payload.accessibility_facilities as Array<Record<string, unknown>>) ?? [])
 
 // 语音导航：逐步播报路线步骤
 function startNavigation() {
@@ -143,18 +147,11 @@ function speakStep(index: number) {
   }
   currentStep.value = index
   const stepText = `第${index + 1}步，${steps.value[index]}`
-  // 使用 store.speak 播报，与数字人同步
-  if (typeof store.speak === 'function') {
-    store.speak(stepText)
-  } else {
-    // 兜底：浏览器 TTS
-    const utter = new SpeechSynthesisUtterance(stepText)
-    utter.lang = 'zh-CN'
-    utter.rate = 0.9
-    window.speechSynthesis.speak(utter)
-  }
-  // 每步间隔 4 秒（根据语速调整）
-  navTimer = setTimeout(() => speakStep(index + 1), 4000)
+  // 通过 store.speak 播报：与数字人（SDK 嘴型 / 后端 TTS）同步，无需组件内自建 TTS
+  store.speak(stepText, { speed: 0.9, gesture: 'point_right' })
+  // 按文本长度估算播报时长（中文约 5 字/秒），避免固定 4 秒把长句截断或短句空等
+  const seconds = Math.min(12, Math.max(2.5, stepText.length / 5))
+  navTimer = setTimeout(() => speakStep(index + 1), seconds * 1000)
 }
 
 function stopNavigation() {
@@ -186,7 +183,7 @@ onUnmounted(() => {
         :class="{ active: navigating }"
         @click="navigating ? stopNavigation() : startNavigation()"
       >
-        <BIcon :name="navigating ? 'stop' : 'volume'" :size="13" />
+        <BIcon :name="navigating ? 'square' : 'volume'" :size="13" />
         {{ navigating ? '停止' : '语音导航' }}
       </button>
     </div>
@@ -270,6 +267,12 @@ onUnmounted(() => {
         <g v-if="elvPt" class="elevator">
           <rect :x="elvPt.x - 9" :y="elvPt.y - 9" width="18" height="18" rx="4" />
           <text :x="elvPt.x" :y="elvPt.y + 3" class="elevator-text">梯</text>
+        </g>
+
+        <!-- 无障碍设施标注（轮椅模式） -->
+        <g v-for="(fac, i) in accessibilityFacilities" :key="'acc' + i" class="accessibility-facility">
+          <circle :cx="mapFn(fac.coord[0], fac.coord[1]).x" :cy="mapFn(fac.coord[0], fac.coord[1]).y" r="7" class="acc-dot" />
+          <text :x="mapFn(fac.coord[0], fac.coord[1]).x" :y="mapFn(fac.coord[0], fac.coord[1]).y + 2.5" class="acc-text">♿</text>
         </g>
 
         <!-- 路线：光晕 + 主线（虚线流动）+ 终点箭头 -->
@@ -467,6 +470,28 @@ onUnmounted(() => {
   text-anchor: middle;
   dominant-baseline: middle;
   user-select: none;
+}
+
+/* 无障碍设施 */
+.acc-dot {
+  fill: #10b981;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+.acc-text {
+  font-size: 8px;
+  fill: #fff;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  user-select: none;
+}
+.wheelchair-badge {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #059669;
+}
+.wheelchair-icon {
+  margin-right: 2px;
 }
 
 /* 路线 */

@@ -1,17 +1,9 @@
-<script setup lang="ts">
+<script lang="ts">
 // Bridge 共享线性图标（feather 风格，stroke 描边，随 currentColor 着色）
-import { computed } from 'vue'
-
-const props = withDefaults(
-  defineProps<{
-    name: string
-    size?: number | string
-    strokeWidth?: number
-  }>(),
-  { size: 20, strokeWidth: 1.8 },
-)
-
-const ICONS: Record<string, string> = {
+//
+// ICONS 与 IconName 放在普通 <script> 块中导出，供其它组件复用图标名联合类型，
+// 这样写错图标名会在编译期报错（此前 name 是 string，写错只渲染空白）。
+export const ICONS = {
   // 品牌桥
   bridge:
     '<path d="M3 9c2.5-4 6-6 9-6s6.5 2 9 6"/><path d="M3 15c2.5 4 6 6 9 6s6.5-2 9-6"/><path d="M3 9v6M21 9v6M8 9v6M16 9v6M12 9v6"/>',
@@ -63,7 +55,23 @@ const ICONS: Record<string, string> = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   image:
     '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>',
-}
+} as const
+
+export type IconName = keyof typeof ICONS
+</script>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+
+const props = withDefaults(
+  defineProps<{
+    /** 图标名，取自 ICONS 的键 */
+    name: IconName
+    size?: number | string
+    strokeWidth?: number
+  }>(),
+  { size: 20, strokeWidth: 1.8 },
+)
 
 const inner = computed(() => ICONS[props.name] ?? '')
 </script>

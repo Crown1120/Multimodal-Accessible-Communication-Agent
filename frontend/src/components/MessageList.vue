@@ -42,6 +42,21 @@ function fmtTime(iso?: string): string {
   if (Number.isNaN(d.getTime())) return ''
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
+
+// 发送失败重试：移除失败气泡并重新提交（sendMessage 会重新插入乐观消息）
+const retrying = ref<string | null>(null)
+async function retry(m: (typeof store.messages)[number]) {
+  if (retrying.value) return
+  retrying.value = m.id
+  try {
+    store.messages = store.messages.filter((x) => x.id !== m.id)
+    await store.sendMessage(m.content)
+  } catch {
+    /* 失败状态由 store 写回 send_status */
+  } finally {
+    retrying.value = null
+  }
+}
 </script>
 
 <template>
@@ -67,6 +82,15 @@ function fmtTime(iso?: string): string {
           <span class="speaker">{{ speakerName(m) }}</span>
           <span v-if="fmtTime(m.created_at)" class="time">{{ fmtTime(m.created_at) }}</span>
           <span v-if="m.send_status === 'failed'" class="send-status">发送失败</span>
+          <button
+            v-if="m.send_status === 'failed'"
+            class="retry-btn"
+            type="button"
+            :disabled="retrying === m.id"
+            @click="retry(m)"
+          >
+            {{ retrying === m.id ? '重试中…' : '重试' }}
+          </button>
         </div>
         <div class="bubble">
           {{ m.content }}
@@ -184,6 +208,29 @@ function fmtTime(iso?: string): string {
 .speaker {
   font-weight: 600;
   color: var(--color-text-muted);
+}
+
+.send-status {
+  color: var(--color-danger, #e5484d);
+  font-weight: 600;
+}
+.retry-btn {
+  margin-left: auto;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 1em;
+  cursor: pointer;
+}
+.retry-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.retry-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .bubble {

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from contextvars import ContextVar
@@ -22,21 +21,14 @@ _SENSITIVE_KEYS = re.compile(r"(token|secret|password|api_key|apikey)", re.IGNOR
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 
-def _json_serializer(record) -> str:
-    """将 loguru record 序列化为 JSON（生产环境结构化日志）。"""
-    try:
-        payload = {
-            "ts": record["time"].isoformat(),
-            "level": record["level"].name,
-            "logger": f"{record['name']}:{record['function']}:{record['line']}",
-            "msg": record["message"],
-            "request_id": request_id_var.get(),
-        }
-        if record.get("exception"):
-            payload["exception"] = str(record["exception"])
-        return json.dumps(payload, ensure_ascii=False)
-    except Exception:  # noqa: BLE001
-        return record["message"]
+def _inject_extra(record) -> None:
+    """把请求 ID 等上下文写入 record["extra"]。
+
+    注意：loguru 的 `format=` 若传函数，其返回值会被当作**格式模板**再做一次
+    `format_map`，因此原来「返回 JSON 字符串」的写法会在每条日志上抛
+    `KeyError: '"ts"'`。结构化日志应改用 `serialize=True` + patcher。
+    """
+    record["extra"]["request_id"] = request_id_var.get()
 
 
 def _redact_message(message: str) -> str:
@@ -68,6 +60,8 @@ def _redact_filter(record) -> bool:
 def setup_logging() -> None:
     """初始化全局日志。"""
     logger.remove()
+    # 把请求 ID 注入每条日志的 extra，供 JSON 结构化日志使用
+    logger.configure(patcher=_inject_extra)
 
     log_format = (
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -75,7 +69,7 @@ def setup_logging() -> None:
         "<cyan>{name}:{function}:{line}</cyan> - <level>{message}</level>"
     )
 
-    # 控制台
+    # 控制台（同样需要脱敏：容器日志同样会外泄密钥）
     logger.add(
         sys.stdout,
         level=settings.log_level,
@@ -83,6 +77,7 @@ def setup_logging() -> None:
         colorize=True,
         backtrace=settings.debug,
         diagnose=settings.debug,
+        filter=_redact_filter,
     )
 
     # 文件（轮转 + 保留）
@@ -104,6 +99,7 @@ def setup_logging() -> None:
     )
 
     # JSON 结构化文件（生产环境，便于日志采集）
+    # 用 loguru 内建 serialize=True（原来把 JSON 字符串当 format 模板会抛 KeyError）
     json_log_path = log_path.with_suffix(".jsonl")
     logger.add(
         str(json_log_path),
@@ -111,9 +107,8 @@ def setup_logging() -> None:
         rotation="10 MB",
         retention="14 days",
         compression="zip",
-        format=_json_serializer,
+        serialize=True,
         filter=_redact_filter,
-        serialize=False,
     )
 
     logger.info("日志系统已就绪，级别={}，文件={}", settings.log_level, settings.log_file)

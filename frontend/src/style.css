@@ -273,22 +273,66 @@ select {
   --color-success-soft: #0d2f1c;
 }
 
-/* ===== 无障碍独立偏好：慢速（减少动画） ===== */
-[data-speech='slow'] * {
-  animation-duration: 0.3s !important;
-  transition-duration: 0.3s !important;
+/* ===== 无障碍独立偏好：慢速 / 听障 / 老年模式 =====
+   注意：这里不再用 `* { animation-duration: 0.12s !important }` 缩短动画时长——
+   那会让 infinite 动画（路线虚线、播报脉冲、边框闪烁）循环得更快，反而加剧闪烁，
+   与「减少动画干扰」的意图相反，对光敏/前庭敏感用户有害。
+   正确做法见文件末尾的 prefers-reduced-motion 规则。 */
+
+/* ===== 键盘可达性：焦点环（全局，需覆盖子组件内的控件） ===== */
+*:focus-visible {
+  outline: 3px solid #4f6ef7 !important;
+  outline-offset: 2px !important;
+  border-radius: 4px;
+}
+/* 听障模式下焦点环用高对比度黄色 */
+[data-mode='hearing'] *:focus-visible {
+  outline-color: #ffd700 !important;
+  outline-width: 4px !important;
 }
 
-/* 听障模式：极致减少动画干扰 */
-[data-mode='hearing'] * {
-  animation-duration: 0.12s !important;
-  transition-duration: 0.12s !important;
+/* 跳过导航链接（键盘用户快速跳到主内容） */
+.skip-link {
+  position: fixed;
+  top: -48px;
+  left: 8px;
+  background: #4f6ef7;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 0 0 8px 8px;
+  z-index: 10001;
+  transition: top 0.2s;
+}
+.skip-link:focus {
+  top: 0;
 }
 
-/* 老年模式：减少动画、节奏更稳 */
-[data-mode='elderly'] * {
-  animation-duration: 0.4s !important;
-  transition-duration: 0.4s !important;
+/* ===== 减少动画偏好：尊重系统设置（光敏/前庭敏感用户） ===== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 老年模式：整体节奏更慢、可点击区域更大 */
+[data-mode='elderly'] button,
+[data-mode='elderly'] textarea,
+[data-mode='elderly'] input {
+  min-height: 44px;
+}
+
+/* 听障 / 老年模式：停掉装饰性的无限循环动画，避免视觉干扰与光敏风险。
+   注意：不使用全局 `* { animation-duration }` 覆盖——那会让 infinite 动画循环更快。 */
+[data-mode='hearing'] .subtitle-bar .dot,
+[data-mode='hearing'] .map-route-widget .route-line,
+[data-mode='elderly'] .subtitle-bar .dot,
+[data-mode='elderly'] .map-route-widget .route-line {
+  animation: none !important;
 }
 
 /* ===== 通用辅助类 ===== */
@@ -302,4 +346,52 @@ select {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
+}
+
+
+/* ===== 视障模式（visual） ===== */
+[data-mode='visual'] {
+  --color-bg: #000000;
+  --color-surface: #0a0a0a;
+  --color-surface-2: #141414;
+  --color-text: #ffffff;
+  --color-text-muted: #e0e0e0;
+  --color-primary: #ffff00;
+  --color-primary-soft: rgba(255, 255, 0, 0.15);
+  --color-border: #333333;
+  --color-border-strong: #555555;
+  --color-accent: #00ffff;
+  --color-success: #00ff00;
+  --color-danger: #ff0000;
+  --color-warning: #ffaa00;
+  font-size: 20px;
+}
+
+[data-mode='visual'] *:focus {
+  outline: 4px solid #ffff00 !important;
+  outline-offset: 3px !important;
+  border-radius: 4px;
+}
+
+[data-mode='visual'] button:hover,
+[data-mode='visual'] button:focus {
+  transform: scale(1.05);
+  border-width: 3px !important;
+}
+
+[data-mode='visual'] .quick-btn {
+  min-height: 56px;
+  font-size: 1.1em;
+  border-width: 2px;
+}
+
+[data-mode='visual'] .input-bar textarea {
+  min-height: 80px;
+  font-size: 1.15em;
+}
+
+[data-mode='visual'] .send,
+[data-mode='visual'] .mic-btn {
+  width: 56px;
+  height: 56px;
 }

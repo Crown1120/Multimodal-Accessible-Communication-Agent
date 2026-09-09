@@ -16,8 +16,8 @@ defineProps<{
     </div>
 
     <div
-      v-for="(loc, i) in (payload.locations as Record<string, unknown>[]) ?? []"
-      :key="i"
+      v-for="loc in (payload.locations as Record<string, unknown>[]) ?? []"
+      :key="`${loc.name}-${loc.floor}-${loc.area}`"
       class="loc"
     >
       <div class="name">

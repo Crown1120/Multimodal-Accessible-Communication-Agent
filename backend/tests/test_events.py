@@ -114,8 +114,30 @@ class TestEventBus:
         await bus.publish("sess_1", make_event(EventType.AGENT_STARTED, "sess_1", 0))
         await bus.publish("sess_1", make_event(EventType.AGENT_COMPLETED, "sess_1", 0))
 
-        queue = await bus.subscribe("sess_1", last_seq=1)
-        event = await queue.get()
+        sub = await bus.subscribe("sess_1", last_seq=1)
+        event = await sub.queue.get()
 
         assert event.seq == 2
         assert event.type == EventType.AGENT_COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_overflow_marks_subscriber_instead_of_silently_dropping(self):
+        """队列满时应标记 overflowed，让 SSE 端点断开重连补齐，而不是静默丢事件。"""
+        bus = EventBus()
+        sub = await bus.subscribe("sess_ovf", last_seq=0)
+        # 人为把队列塞满（不通过 publish，避免重放缓冲干扰）
+        while not sub.queue.full():
+            sub.queue.put_nowait(make_event(EventType.AGENT_THINKING, "sess_ovf", 0))
+        assert sub.overflowed is False
+        await bus.publish("sess_ovf", make_event(EventType.MESSAGE_DELTA, "sess_ovf", 0, text="x"))
+        assert sub.overflowed is True
+
+    @pytest.mark.asyncio
+    async def test_drop_releases_session_state(self):
+        """会话关闭/空闲超时后应释放事件状态，避免长跑服务内存增长。"""
+        bus = EventBus()
+        await bus.publish("sess_drop", make_event(EventType.AGENT_STARTED, "sess_drop", 0))
+        assert bus.has_session("sess_drop") is True
+        bus.drop("sess_drop")
+        assert bus.has_session("sess_drop") is False
+        assert bus.session_count() == 0

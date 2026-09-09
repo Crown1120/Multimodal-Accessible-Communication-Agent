@@ -13,18 +13,22 @@ const iconMap: Record<string, string> = {
 
 <template>
   <Teleport to="body">
-    <div class="toast-container" role="alert" aria-live="polite">
+    <!-- role="status" 已隐含 aria-live="polite"；原先同时写 role="alert" 与
+         aria-live="polite" 语义冲突（alert 隐含 assertive） -->
+    <div class="toast-container" role="status" aria-live="polite">
       <TransitionGroup name="toast">
-        <div
+        <button
           v-for="t in toasts"
           :key="t.id"
+          type="button"
           class="toast"
           :class="`toast-${t.type}`"
+          :aria-label="`${t.message}（点击关闭）`"
           @click="dismiss(t.id)"
         >
-          <span class="toast-icon">{{ iconMap[t.type] }}</span>
+          <span class="toast-icon" aria-hidden="true">{{ iconMap[t.type] }}</span>
           <span class="toast-message">{{ t.message }}</span>
-        </div>
+        </button>
       </TransitionGroup>
     </div>
   </Teleport>
@@ -56,6 +60,8 @@ const iconMap: Record<string, string> = {
   pointer-events: auto;
   font-size: 14px;
   line-height: 1.5;
+  font-family: inherit;
+  text-align: left;
   animation: toast-in 0.3s ease;
 }
 

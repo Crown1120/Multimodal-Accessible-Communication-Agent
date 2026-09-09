@@ -10,8 +10,11 @@
       content="Bridge 多模态无障碍沟通智能体 —— 面向医院、政务大厅等公共服务场景的实时沟通桥梁，支持语音、文字、字幕、翻译、数字人与地图能力。"
     />
     <title>Bridge · 无障碍沟通智能体</title>
-    <!-- 预加载数字人 SDK（仅下载不执行，首屏加速） -->
-    <link rel="preload" as="script" href="https://media.xingyun3d.com/xingyun3d/general/litesdk/xmovAvatar@latest.js" crossorigin="anonymous" />
+    <!--
+      数字人 SDK 由 DigitalHuman.vue 在确认拿到凭据后才动态加载。
+      这里不再无条件 preload：未配置数字人时会白白下载数 MB 脚本，
+      反而拖慢首屏（无障碍场景下网络往往较差）。
+    -->
   </head>
   <body>
     <div id="app"></div>

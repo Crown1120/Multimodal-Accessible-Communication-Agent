@@ -10,6 +10,27 @@ services:
       CHROMA_PATH: /app/chroma
       LOG_FILE: /app/logs/bridge.log
       ENVIRONMENT: production
+      # 生产关闭 debug：避免 loguru diagnose 在日志中展开局部变量（敏感信息泄漏面）
+      DEBUG: "false"
+      # 启动时自动执行 Alembic 迁移
+      AUTO_MIGRATE: "true"
+      # 运维接口（POST /api/knowledge/reindex）令牌；留空则仅允许容器内/本机访问
+      # 生产环境请通过 .env 或 Secret 管理系统注入
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+      # 数字人凭据（避免内联进前端产物，由 /api/config/public 下发）
+      XINGYUN_APP_ID: ${XINGYUN_APP_ID:-}
+      XINGYUN_APP_SECRET: ${XINGYUN_APP_SECRET:-}
+      # LLM / 语音服务
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      VOLC_ASR_X_API_KEY: ${VOLC_ASR_X_API_KEY:-}
+      VOLC_ASR_RESOURCE_ID: ${VOLC_ASR_RESOURCE_ID:-}
+      TTS_BASE_URL: ${TTS_BASE_URL:-}
+      TTS_VOICE: ${TTS_VOICE:-}
+      TTS_SEEDTTS_RESOURCE_ID: ${TTS_SEEDTTS_RESOURCE_ID:-}
     volumes:
       - backend-data:/app/data
       - backend-logs:/app/logs
@@ -21,7 +42,8 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      # 冷启动需 init_db + 全量知识库索引，10s 在慢磁盘上会误报 unhealthy
+      start_period: 30s
 
   frontend:
     build: ./frontend

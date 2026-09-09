@@ -38,6 +38,9 @@ class KnowledgeWatcher:
             return
         # 首次索引
         await self._rebuild(initial=True)
+        # 记录初始快照：否则第一轮轮询会把「尚未记录」误判为「文件有变化」，
+        # 每次启动都会多一次无意义的全量重建（日志里能看到多余的「检测到变化」）。
+        self._mtimes = self._snapshot()
         self._task = asyncio.create_task(self._watch_loop(), name="knowledge-watcher")
         logger.info("知识库热加载监控已启动，间隔={}s，目录={}", self._interval, _KNOWLEDGE_DIR)
 
@@ -62,16 +65,21 @@ class KnowledgeWatcher:
             except Exception:  # noqa: BLE001
                 logger.exception("知识库热加载检查失败")
 
-    def _has_changed(self) -> bool:
-        """检查 knowledge/ 下 .md 文件是否有变化。"""
+    def _snapshot(self) -> dict[str, float]:
+        """采集 knowledge/ 下 .md 文件的修改时间快照。"""
         if not _KNOWLEDGE_DIR.exists():
-            return False
-        current: dict[str, float] = {}
+            return {}
+        snapshot: dict[str, float] = {}
         for md in _KNOWLEDGE_DIR.glob("*.md"):
             try:
-                current[md.name] = md.stat().st_mtime
+                snapshot[md.name] = md.stat().st_mtime
             except OSError:
                 continue
+        return snapshot
+
+    def _has_changed(self) -> bool:
+        """检查 knowledge/ 下 .md 文件是否有变化。"""
+        current = self._snapshot()
         changed = current != self._mtimes
         if changed:
             self._mtimes = current

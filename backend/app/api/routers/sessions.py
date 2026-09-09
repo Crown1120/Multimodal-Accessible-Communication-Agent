@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,9 +26,11 @@ from app.core.config import settings
 from app.core.errors import AdapterError, ErrorCode
 from app.core.events import EventType, make_event, to_sse
 from app.core.logging import get_logger
+from app.core.security import rate_limit, read_upload_limited
 from app.core.task_manager import background_tasks
 from app.memory.service import get_memory_service
-from app.models.database import async_session_factory, get_session as get_db
+from app.models.database import async_session_factory
+from app.models.database import get_session as get_db
 from app.models.schemas import (
     AudioTranscribeResponse,
     MessageCreate,
@@ -40,8 +42,10 @@ from app.models.schemas import (
     SessionOut,
 )
 from app.repositories.session_repo import (
+    AgentRunRepository,
     MessageRepository,
     SessionRepository,
+    new_run_id,
 )
 from app.services.event_bus import event_bus
 
@@ -77,7 +81,11 @@ async def get_session(
     return SessionOut.from_orm(await repo.get(session_id))
 
 
-@router.post("/{session_id}/messages", response_model=SendMessageResponse)
+@router.post(
+    "/{session_id}/messages",
+    response_model=SendMessageResponse,
+    dependencies=[Depends(rate_limit("messages"))],
+)
 async def send_message(
     session_id: str,
     payload: MessageCreate,
@@ -104,17 +112,21 @@ async def send_message(
     await db.commit()
 
     # 异步启动 Agent（使用独立 DB 会话，避免与请求会话生命周期冲突）
+    run_id = new_run_id()
     background_tasks.create(
-        _run_agent(session_id, message.content, message.id),
-        name=f"agent:{session_id}:{message.id}",
+        _run_agent(session_id, message.content, message.id, run_id),
+        name=f"agent:{session_id}:{run_id}",
     )
-    return SendMessageResponse(run_id=message.id, message_id=message.id)
+    return SendMessageResponse(run_id=run_id, message_id=message.id)
 
 
-@router.post("/{session_id}/audio", response_model=AudioTranscribeResponse)
+@router.post(
+    "/{session_id}/audio",
+    response_model=AudioTranscribeResponse,
+    dependencies=[Depends(rate_limit("audio"))],
+)
 async def upload_audio(
     session_id: str,
-    request: Request,
     audio: UploadFile = File(...),
     speaker: str = "staff",
     language: str = "zh",
@@ -131,7 +143,8 @@ async def upload_audio(
     repo = SessionRepository(db)
     await repo.get(session_id)  # 校验会话
 
-    audio_bytes = await audio.read()
+    # 分块读取并强制大小上限，避免任意大小文件读入内存
+    audio_bytes = await read_upload_limited(audio)
     if not audio_bytes:
         raise AdapterError(ErrorCode.ADAPTER_ASR_FAILED, "音频为空")
 
@@ -155,7 +168,7 @@ async def upload_audio(
                         is_final=False,
                     ),
                 )
-    except AdapterError as e:
+    except AdapterError:
         # 适配器失败后自动重试（豆包ASR降级后 get_asr_adapter 会返回 Whisper/Vosk）
         from app.adapters.asr import get_asr_adapter as _get_asr  # noqa: PLC0415
         asr = _get_asr()
@@ -225,7 +238,7 @@ async def upload_audio(
     )
     await db.commit()
 
-    # 推送最终字幕
+    # 推送最终字幕（带 message_id，前端据此使用与服务端一致的消息 ID）
     await event_bus.publish(
         session_id,
         make_event(
@@ -235,24 +248,27 @@ async def upload_audio(
             text=final_text,
             speaker=speaker,
             language=language,
+            message_id=message.id,
         ),
     )
 
     # 异步触发 Agent
+    run_id = new_run_id()
     background_tasks.create(
-        _run_agent(session_id, final_text, message.id),
-        name=f"agent:{session_id}:{message.id}",
+        _run_agent(session_id, final_text, message.id, run_id),
+        name=f"agent:{session_id}:{run_id}",
     )
     return AudioTranscribeResponse(
         session_id=session_id,
         text=final_text,
         message_id=message.id,
+        run_id=run_id,
         ok=True,
         asr_adapter=get_asr_adapter_name() or None,
     )
 
 
-async def _run_agent(session_id: str, user_text: str, message_id: str) -> None:
+async def _run_agent(session_id: str, user_text: str, message_id: str, run_id: str, wheelchair: bool = False) -> None:
     async with _get_session_lock(session_id):
         async with async_session_factory() as task_db:
             try:
@@ -261,11 +277,12 @@ async def _run_agent(session_id: str, user_text: str, message_id: str) -> None:
                 runner = SimpleAgentRunner(task_db)
                 try:
                     await asyncio.wait_for(
-                        runner.run(session, user_text, message_id),
+                        runner.run(session, user_text, message_id, run_id),
                         timeout=settings.agent_timeout_seconds,
                     )
                 except asyncio.TimeoutError:
                     logger.error("Agent 运行超时 session={} timeout={}s", session_id, settings.agent_timeout_seconds)
+                    await _finalize_run(task_db, run_id, status="timeout")
                     await event_bus.publish(
                         session_id,
                         make_event(
@@ -278,6 +295,8 @@ async def _run_agent(session_id: str, user_text: str, message_id: str) -> None:
                     )
             except Exception:  # noqa: BLE001
                 logger.exception("Agent 运行失败 session={}", session_id)
+                # 同样要把 run 收尾，否则 agent_runs 会永久停留在 running
+                await _finalize_run(task_db, run_id, status="failed")
                 await event_bus.publish(
                     session_id,
                     make_event(
@@ -290,14 +309,29 @@ async def _run_agent(session_id: str, user_text: str, message_id: str) -> None:
                 )
 
 
+async def _finalize_run(db: AsyncSession, run_id: str, *, status: str) -> None:
+    """把 AgentRun 置为终态；失败只记日志，不影响对外错误响应。"""
+    try:
+        await AgentRunRepository(db).complete(run_id, status=status)
+        await db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("标记 Agent 运行状态失败 run={} status={}", run_id, status)
+
+
 @router.get("/{session_id}/messages", response_model=list[MessageOut])
 async def list_messages(
     session_id: str,
+    limit: int = Query(default=200, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
 ) -> list[MessageOut]:
+    """查询消息历史。
+
+    默认只返回最近 200 条：长会话（大厅常驻终端）可能有上千条消息，
+    一次全量返回既拖慢首屏也让前端渲染卡顿。
+    """
     repo = SessionRepository(db)
     await repo.get(session_id)
-    msgs = await repo.list_messages(session_id)
+    msgs = await repo.list_messages(session_id, limit=limit)
     return [MessageOut.from_orm(m) for m in msgs]
 
 
@@ -306,11 +340,18 @@ async def get_preferences(
     session_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> dict | None:
-    """查询用户偏好。"""
+    """查询用户偏好。
+
+    `mode` 存在会话表上而不是偏好表，这里一并返回——前端会读取 `pref.mode`
+    来恢复上次的模式，此前后端从不返回该字段，导致模式偏好永远恢复不了。
+    """
     repo = SessionRepository(db)
-    await repo.get(session_id)
+    session = await repo.get(session_id)
     mem = get_memory_service(db)
-    return await mem.load_preferences(session_id)
+    pref = await mem.load_preferences(session_id)
+    if pref is None:
+        return None
+    return {**pref, "mode": session.mode}
 
 
 @router.put("/{session_id}/preferences", response_model=PreferenceOut)
@@ -321,7 +362,7 @@ async def save_preferences(
 ) -> dict:
     """保存用户偏好（模式联动默认值）。"""
     repo = SessionRepository(db)
-    await repo.get(session_id)
+    session = await repo.get(session_id)
     mem = get_memory_service(db)
     result = await mem.save_preferences(
         session_id,
@@ -332,8 +373,11 @@ async def save_preferences(
         high_contrast=payload.high_contrast,
         frequent_places=payload.frequent_places,
     )
+    # 同步会话模式，保证偏好与会话状态一致
+    if payload.mode:
+        session.mode = payload.mode
     await db.commit()
-    return result
+    return {**result, "mode": session.mode}
 
 
 @router.delete("/{session_id}/preferences")
@@ -357,6 +401,9 @@ async def close_session(
 ) -> SessionOut:
     repo = SessionRepository(db)
     session = await repo.close(session_id)
+    # 释放会话级进程内状态，避免长跑服务内存持续增长
+    _session_locks.pop(session_id, None)
+    event_bus.drop(session_id)
     return SessionOut.from_orm(session)
 
 
@@ -364,32 +411,45 @@ async def close_session(
 async def stream_events(
     session_id: str,
     request: Request,
+    last_event_id: int | None = None,
 ) -> StreamingResponse:
-    # Last-Event-ID 用于断线重连恢复
-    last_seq = 0
-    last_id = request.headers.get("last-event-id")
-    if last_id:
-        try:
-            last_seq = int(last_id)
-        except ValueError:
-            last_seq = 0
+    """SSE 事件流。
 
-    queue = await event_bus.subscribe(session_id, last_seq)
+    断线重连恢复：优先读 `Last-Event-ID` 请求头，其次读 `?last_event_id=`
+    查询参数（浏览器 EventSource 无法自定义请求头，重连时需要查询参数）。
+    """
+    last_seq = 0
+    if last_event_id is not None:
+        last_seq = max(0, last_event_id)
+    else:
+        header_id = request.headers.get("last-event-id")
+        if header_id:
+            try:
+                last_seq = max(0, int(header_id))
+            except ValueError:
+                last_seq = 0
+
+    sub = await event_bus.subscribe(session_id, last_seq)
 
     async def event_stream():
         try:
             while True:
                 if await request.is_disconnected():
                     break
+                # 队列溢出（客户端消费过慢）：主动断开，让前端带 last_event_id 重连补齐，
+                # 而不是静默丢事件导致前端状态永久不一致
+                if sub.overflowed:
+                    logger.warning("SSE 订阅溢出，主动断开以便重连补齐 session={}", session_id)
+                    break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                    event = await asyncio.wait_for(sub.queue.get(), timeout=15)
                 except asyncio.TimeoutError:
                     # 心跳保持连接
                     yield ": ping\n\n"
                     continue
                 yield to_sse(event)
         finally:
-            event_bus.unsubscribe(session_id, queue)
+            event_bus.unsubscribe(session_id, sub)
 
     return StreamingResponse(
         event_stream(),

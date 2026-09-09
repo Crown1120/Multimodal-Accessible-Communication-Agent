@@ -39,7 +39,8 @@ async def _check_database() -> DatabaseStatus:
     """检查数据库连通性（执行简单查询）。"""
     try:
         from sqlalchemy import text
-        from app.models.database import engine, _use_postgres
+
+        from app.models.database import _use_postgres, engine
         db_type = "postgresql" if _use_postgres else "sqlite"
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -72,13 +73,16 @@ def _check_adapters() -> list[AdapterStatus]:
     ))
     # RAG
     try:
+        from app.core.config import settings as _settings
         from app.rag.retriever import get_rag
 
         rag = get_rag()
+        # 不再硬编码 "chroma"：默认后端是内存中文 n-gram 检索
+        rag_mode = "chroma" if _settings.chroma_embedding else "in-memory"
         result.append(AdapterStatus(
             name="rag",
             available=rag.is_ready(),
-            mode="chroma",
+            mode=rag_mode,
         ))
     except Exception:
         result.append(AdapterStatus(name="rag", available=False, mode="unknown"))

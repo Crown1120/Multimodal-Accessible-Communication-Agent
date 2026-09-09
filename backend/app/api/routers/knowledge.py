@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from app.core.security import require_admin
 from app.rag.retriever import get_rag
 
 router = APIRouter()
@@ -15,7 +16,12 @@ class ReindexResponse(BaseModel):
     message: str
 
 
-@router.post("/reindex", response_model=ReindexResponse, summary="重建知识库索引")
+@router.post(
+    "/reindex",
+    response_model=ReindexResponse,
+    summary="重建知识库索引（需管理员权限）",
+    dependencies=[Depends(require_admin)],
+)
 async def reindex() -> ReindexResponse:
     rag = get_rag()
     count = await rag.reindex()

@@ -46,9 +46,11 @@ _DIALECT_MAP: dict[str, str] = {
     "不得行": "不行",
 }
 
-# 构建正则：按长度降序匹配，避免短串覆盖长串
+# 构建正则：按长度降序匹配，避免短串覆盖长串。
+# 必须 re.escape：映射表后续若加入含正则元字符的词（如 "C++"、"?"、"("），
+# 未转义会改变匹配语义甚至让整个 pattern 失效。
 _PATTERN = re.compile(
-    "|".join(sorted(_DIALECT_MAP.keys(), key=len, reverse=True))
+    "|".join(re.escape(k) for k in sorted(_DIALECT_MAP.keys(), key=len, reverse=True))
 )
 
 

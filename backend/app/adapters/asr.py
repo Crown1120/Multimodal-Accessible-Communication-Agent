@@ -12,18 +12,19 @@
 
 from __future__ import annotations
 
-import base64
-import uuid as _uuid
-
 import asyncio
+import base64
 import re
+import time
+import uuid as _uuid
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
 from app.core.config import settings
 from app.core.errors import AdapterError, ErrorCode
+from app.core.http import get_http_client
 from app.core.logging import get_logger
 
 logger = get_logger()
@@ -39,13 +40,15 @@ class ASRResult:
 
 
 class ASRAdapter(Protocol):
-    """ASR 统一接口。"""
+    """ASR 统一接口。
+
+    `stream_transcribe` 是异步生成器（不是 `async def -> AsyncIterator`），
+    否则类型检查器会认为它返回协程，无法校验适配器是否符合协议。
+    """
 
     async def transcribe(self, audio: bytes, *, language: str = "zh") -> ASRResult: ...
 
-    async def stream_transcribe(
-        self, audio: bytes, *, language: str = "zh"
-    ) -> AsyncIterator[str]: ...
+    def stream_transcribe(self, audio: bytes, *, language: str = "zh") -> AsyncIterator[str]: ...
 
 
 # ---- Mock 适配器（演示用，返回固定话术）----
@@ -81,9 +84,8 @@ class MockASRAdapter:
         await asyncio.sleep(0.15)
         idx = len(audio) % len(_MOCK_PHRASES)
         text = _MOCK_PHRASES[idx]
-        # 按词流式输出，模拟实时识别
+        # 按词分块输出（不逐词 sleep，避免人为拖慢字幕）
         for token in re.findall(r"[\u4e00-\u9fa5]+|[A-Za-z]+", text):
-            await asyncio.sleep(0.08)
             yield token
         # 最后补一个空串标记结束
         yield ""
@@ -109,34 +111,35 @@ class OpenAIASRAdapter:
     async def stream_transcribe(
         self, audio: bytes, *, language: str = "zh"
     ) -> AsyncIterator[str]:
-        # Whisper 不原生支持流式，先整体识别再按词切分输出
+        # Whisper 不原生支持流式，先整体识别再按词切分输出（不逐词 sleep）
         text = await self._call_whisper(audio, language)
         for token in re.findall(r"[\u4e00-\u9fa5]+|[A-Za-z]+", text):
-            await asyncio.sleep(0.08)
             yield token
         yield ""
 
     async def _call_whisper(self, audio: bytes, language: str) -> str:
-        files = {
+        files: dict[str, Any] = {
             "file": ("audio.webm", audio, "audio/webm"),
             "model": (None, self.model),
             "language": (None, language),
             "response_format": (None, "json"),
         }
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{self.base_url}/audio/transcriptions",
-                files=files,
-                headers={"Authorization": f"Bearer {self.api_key}"},
+        # 复用进程级共享连接池（原实现每次调用新建 AsyncClient，握手开销 + 句柄泄漏）
+        client = get_http_client()
+        resp = await client.post(
+            f"{self.base_url}/audio/transcriptions",
+            files=files,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout=60.0,
+        )
+        if resp.status_code != 200:
+            raise AdapterError(
+                ErrorCode.ADAPTER_ASR_FAILED,
+                f"ASR 请求失败：HTTP {resp.status_code}",
+                details={"body": resp.text[:512]},
             )
-            if resp.status_code != 200:
-                raise AdapterError(
-                    ErrorCode.ADAPTER_ASR_FAILED,
-                    f"ASR 请求失败：HTTP {resp.status_code}",
-                    details={"body": resp.text[:512]},
-                )
-            data = resp.json()
-            return data.get("text", "").strip()
+        data = resp.json()
+        return data.get("text", "").strip()
 
 
 # ---- Vosk 离线 ASR 适配器（无需 API Key，本地识别）----
@@ -166,27 +169,39 @@ class VoskASRAdapter:
         if model_path is None:
             raise FileNotFoundError("Vosk 模型未找到，请先下载模型")
 
+        # 单事件循环内同步初始化（无 await 点）天然原子，不会并发加载两份模型
         if VoskASRAdapter._model is None:
             VoskASRAdapter._model = Model(model_path)
             logger.info("Vosk 模型已加载：{}", model_path)
         self.model = VoskASRAdapter._model
-
     async def transcribe(self, audio: bytes, *, language: str = "zh") -> ASRResult:
-        import json
-        import wave
-        import tempfile
         import os
-        from vosk import KaldiRecognizer
 
         # Vosk 需要 WAV 格式（16kHz, 16-bit, mono）
         # 先将上传的音频转换为 WAV
         wav_path = await self._to_wav(audio)
 
         try:
-            wf = wave.open(wav_path, "rb")
+            # Kaldi 识别为同步 CPU 密集操作，整体放入线程池，避免阻塞事件循环
+            text = await asyncio.to_thread(self._recognize_wav, wav_path)
+            logger.info("Vosk ASR 返回：{}", text)
+            return ASRResult(text, language=language)
+        finally:
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+
+    def _recognize_wav(self, wav_path: str) -> str:
+        """同步 WAV 识别（在线程池中执行）。"""
+        import json
+        import wave
+
+        from vosk import KaldiRecognizer
+
+        with wave.open(wav_path, "rb") as wf:  # with 确保关闭，Windows 上才能删除临时文件
             if wf.getnchannels() != 1:
                 logger.warning("Vosk 需要单声道音频，正在自动转换")
-
             rec = KaldiRecognizer(self.model, wf.getframerate())
             rec.SetWords(True)
 
@@ -200,22 +215,13 @@ class VoskASRAdapter:
                     if result.get("text"):
                         results.append(result["text"])
 
-            # 最后获取剩余结果
             final = json.loads(rec.FinalResult())
             if final.get("text"):
                 results.append(final["text"])
 
-            text = "".join(results).strip()
-            # Vosk 中文识别结果含多余空格（如 "你好 你 是 谁"），去除中文间空格
-            text = re.sub(r"([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])", r"\1\2", text)
-            text = re.sub(r"([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])", r"\1\2", text)
-            logger.info("Vosk ASR 返回：{}", text)
-            return ASRResult(text, language=language)
-        finally:
-            try:
-                os.remove(wav_path)
-            except OSError:
-                pass
+        text = "".join(results).strip()
+        # Vosk 中文识别结果含多余空格（如 "你好 你 是 谁"）；lookahead 单次遍历即可处理连续空格
+        return re.sub(r"([\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])", r"\1", text)
 
     async def stream_transcribe(
         self, audio: bytes, *, language: str = "zh"
@@ -231,53 +237,29 @@ class VoskASRAdapter:
         """将音频转换为 16kHz 16-bit mono WAV（Vosk 要求格式）。
 
         优先使用 PyAV（av 库），回退到 ffmpeg 命令行。
+        解码/重采样为同步 CPU 密集操作，放入线程池避免阻塞事件循环。
         """
-        import tempfile
         import os
-        import io
+        import tempfile
 
         tmp_out = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp_out.close()
 
         # 方式1：使用 PyAV 库转换（不依赖 PATH）
         try:
-            import av
-            import wave
-
-            input_container = av.open(io.BytesIO(audio))
-            output_container = av.open(tmp_out.name, mode="w", format="wav")
-
-            output_stream = output_container.add_stream(
-                "pcm_s16le",
-                rate=16000,
-                layout="mono",
-            )
-
-            for frame in input_container.decode(audio=0):
-                # 重采样到 16kHz mono
-                resampler = av.AudioResampler(
-                    format="s16", layout="mono", rate=16000
-                )
-                resampled = resampler.resample(frame)
-                for r in resampled:
-                    output_container.mux(r)
-
-            input_container.close()
-            output_container.close()
-
+            await asyncio.to_thread(self._convert_with_pyav, audio, tmp_out.name)
             if os.path.getsize(tmp_out.name) > 0:
                 return tmp_out.name
         except Exception as e:
             logger.warning("PyAV 转换失败，尝试 ffmpeg 命令行：{}", e)
 
         # 方式2：使用 ffmpeg 命令行
+        tmp_in = tempfile.NamedTemporaryFile(suffix=".webm", delete=False)
         try:
-            import asyncio
-
-            tmp_in = tempfile.NamedTemporaryFile(suffix=".webm", delete=False)
             tmp_in.write(audio)
+        finally:
             tmp_in.close()
-
+        try:
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-y", "-i", tmp_in.name,
                 "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le",
@@ -286,17 +268,67 @@ class VoskASRAdapter:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await proc.wait()
-            os.remove(tmp_in.name)
 
-            if os.path.exists(tmp_out.name) and os.path.getsize(tmp_out.name) > 0:
+            if proc.returncode == 0 and os.path.exists(tmp_out.name) and os.path.getsize(tmp_out.name) > 0:
                 return tmp_out.name
         except Exception as e:
             logger.warning("ffmpeg 命令行转换也失败：{}", e)
+        finally:
+            # 必须放在 finally：ffmpeg 不存在时 create_subprocess_exec 会抛异常，
+            # 旧实现在正常路径才删除临时文件，异常时每次请求都会泄漏一个 .webm
+            try:
+                os.remove(tmp_in.name)
+            except OSError:
+                pass
 
-        # 方式3：直接写入原始数据（最后手段）
-        with open(tmp_out.name, "wb") as f:
-            f.write(audio)
-        return tmp_out.name
+        # 方式3：原始数据即 WAV 时直接使用；否则报错（避免 wave.open 解析非 WAV 抛裸异常）
+        if audio[:4] == b"RIFF":
+            with open(tmp_out.name, "wb") as f:
+                f.write(audio)
+            return tmp_out.name
+        try:
+            os.remove(tmp_out.name)
+        except OSError:
+            pass
+        raise AdapterError(
+            ErrorCode.ADAPTER_ASR_FAILED,
+            "音频转换为 WAV 失败（未安装 ffmpeg 且音频格式不受支持）",
+        )
+
+    @staticmethod
+    def _convert_with_pyav(audio: bytes, out_path: str) -> None:
+        """PyAV 解码 + 重采样到 16kHz mono s16（在线程池中执行）。
+
+        注意：`OutputContainer.mux()` 接受的是 **Packet**，不是 Frame。
+        旧实现直接 `mux(frame)`，PyAV 内部会对参数做 `for packet in packets`
+        迭代，于是抛 `TypeError: AudioFrame object is not iterable`——
+        这条「首选」转换路径其实从未成功过，一直悄悄退到 ffmpeg 命令行。
+        """
+        import io
+
+        import av
+
+        input_container = av.open(io.BytesIO(audio))
+        output_container = av.open(out_path, mode="w", format="wav")
+        try:
+            # av.open(BytesIO) 一定是输入容器；stub 里返回联合类型，这里显式收窄
+            input_stream: Any = input_container
+            output_stream = output_container.add_stream(
+                "pcm_s16le",
+                rate=16000,
+                layout="mono",
+            )
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+            for frame in input_stream.decode(audio=0):
+                for resampled in resampler.resample(frame):
+                    for packet in output_stream.encode(resampled):
+                        output_container.mux(packet)
+            # flush 编码器，否则末尾音频会丢失
+            for packet in output_stream.encode(None):
+                output_container.mux(packet)
+        finally:
+            input_container.close()
+            output_container.close()
 
 
 # ---- faster-whisper 离线 ASR 适配器（基于 Whisper 架构，精度高）----
@@ -327,24 +359,29 @@ class WhisperASRAdapter:
         self.model = WhisperASRAdapter._model
 
     async def transcribe(self, audio: bytes, *, language: str = "zh") -> ASRResult:
-        import tempfile
         import os
+        import tempfile
 
-        # 写入临时文件
+        # 临时文件写入放入线程池（大音频同步写盘会阻塞事件循环）
         tmp_in = tempfile.NamedTemporaryFile(suffix=".webm", delete=False)
-        tmp_in.write(audio)
-        tmp_in.close()
+        try:
+            await asyncio.to_thread(tmp_in.write, audio)
+        finally:
+            tmp_in.close()
 
         try:
-            # faster-whisper 的 transcribe 是同步的，用线程池避免阻塞事件循环
-            segments, _ = await asyncio.to_thread(
-                self.model.transcribe,
-                tmp_in.name,
-                language="zh" if language.startswith("zh") else None,
-                beam_size=5,
-                vad_filter=True,
-            )
-            text = "".join(seg.text for seg in segments).strip()
+            # transcribe 返回懒生成器：真正的 beam-search 解码发生在迭代 segments 时，
+            # 因此把「调用 + 迭代拼文本」整体放入线程池，否则识别期间全站请求冻结
+            def _run() -> str:
+                segments, _ = self.model.transcribe(
+                    tmp_in.name,
+                    language="zh" if language.startswith("zh") else None,
+                    beam_size=5,
+                    vad_filter=True,
+                )
+                return "".join(seg.text for seg in segments).strip()
+
+            text = await asyncio.to_thread(_run)
             logger.info("Whisper ASR 返回：{}", text)
             return ASRResult(text, language=language)
         finally:
@@ -366,7 +403,17 @@ class WhisperASRAdapter:
 
 _asr_adapter: ASRAdapter | None = None
 _asr_adapter_name: str = ""  # 当前实际使用的 ASR 适配器名称（前端用于显示精度来源）
-_volc_status: str = "unknown"  # unknown / ok / bad (403 资源未开通)
+
+# 火山 ASR 降级状态机：冷却而非永久禁用
+# _volc_cooldown_until 之前的时间戳内跳过云端 ASR；到期后自动重试恢复，
+# 避免一次网络抖动导致整进程永久降级到离线识别。
+_TRANSIENT_COOLDOWN_S = 120.0  # 网络超时/临时错误：冷却 2 分钟
+_AUTH_COOLDOWN_S = 3600.0  # 鉴权失败/资源未开通：冷却 1 小时
+_volc_cooldown_until: float = 0.0
+
+
+def _volc_in_cooldown() -> bool:
+    return time.monotonic() < _volc_cooldown_until
 
 
 def get_asr_adapter_name() -> str:
@@ -379,7 +426,7 @@ class VolcFlashASRAdapter(ASRAdapter):
     """火山引擎「大模型录音文件识别极速版」HTTP 适配器。
 
     控制台需开通：https://console.volcengine.com/speech/service/10035
-    资源 ID 默认为 volc.bigasr.auc_turbo；失败时自动降级到离线识别。
+    资源 ID 默认为 volc.bigasr.auc_turbo；失败时按错误类型冷却降级到离线识别。
     """
 
     _ENDPOINT = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
@@ -390,7 +437,6 @@ class VolcFlashASRAdapter(ASRAdapter):
             raise AdapterError(ErrorCode.ADAPTER_ASR_FAILED, "VOLC_ASR_X_API_KEY not set")
         self._api_key = settings.volc_asr_app_key
         self._resource_id = settings.volc_asr_resource_id or "volc.bigasr.auc_turbo"
-        self._client = httpx.AsyncClient(timeout=self._TIMEOUT)
 
     async def transcribe(self, audio_bytes, *, language="zh", sample_rate=None):
         b64 = base64.b64encode(audio_bytes).decode("ascii")
@@ -426,15 +472,21 @@ class VolcFlashASRAdapter(ASRAdapter):
             "X-Api-Sequence": "-1",
         }
         try:
-            resp = await self._client.post(self._ENDPOINT, json=payload, headers=headers)
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "timeout" in msg or "401" in msg or "403" in msg or "auth" in msg:
-                VolcFlashASRAdapter._mark_volc_unavailable()
-            raise AdapterError(ErrorCode.ADAPTER_ASR_FAILED, f"ASR network failed") from exc
+            resp = await get_http_client().post(
+                self._ENDPOINT, json=payload, headers=headers, timeout=self._TIMEOUT
+            )
+        except httpx.TimeoutException as exc:
+            # 网络超时属临时故障：短暂冷却后自动恢复
+            _mark_volc_cooldown(_TRANSIENT_COOLDOWN_S)
+            raise AdapterError(ErrorCode.ADAPTER_ASR_FAILED, "ASR network timeout") from exc
+        except httpx.HTTPError as exc:
+            _mark_volc_cooldown(_TRANSIENT_COOLDOWN_S)
+            raise AdapterError(
+                ErrorCode.ADAPTER_ASR_FAILED, f"ASR network failed: {type(exc).__name__}"
+            ) from exc
         if resp.status_code != 200:
             if resp.status_code in (401, 403):
-                VolcFlashASRAdapter._mark_volc_unavailable()
+                _mark_volc_cooldown(_AUTH_COOLDOWN_S)
             raise AdapterError(
                 ErrorCode.ADAPTER_ASR_FAILED,
                 f"ASR HTTP {resp.status_code}: {resp.text[:200]}",
@@ -444,46 +496,48 @@ class VolcFlashASRAdapter(ASRAdapter):
         if code and str(code) not in ("0", "20000000"):
             m = data.get("message") or data.get("StatusMessage") or ""
             if str(code) == "45000030" or "not granted" in m or "resource" in m.lower():
-                VolcFlashASRAdapter._mark_volc_unavailable()
+                _mark_volc_cooldown(_AUTH_COOLDOWN_S)
             raise AdapterError(
                 ErrorCode.ADAPTER_ASR_FAILED, f"ASR err code={code} msg={m}"
             )
         text = ""
-        global _volc_status
         try:
             text = data["result"]["text"].strip()
-        except Exception:
+        except (KeyError, TypeError, AttributeError):
             utts = (data.get("result") or {}).get("utterances") or []
             if utts:
                 text = utts[0].get("text", "").strip()
-        import re as _re
+        if not text:
+            logger.warning("豆包ASR返回空文本，响应字段可能变更，请检查上游协议")
 
-        text = _re.sub(r"([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", r"\1", text)
-        _volc_status = "ok"
+        text = re.sub(r"([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", r"\1", text)
+        _clear_volc_cooldown()
         logger.info("豆包ASR返回：{}", text)
         return ASRResult(text or "", language=language or "zh", confidence=0.95)
-
-    @staticmethod
-    def _mark_volc_unavailable() -> None:
-        """标记豆包 ASR 不可用并清空缓存，下次请求自动走离线 Whisper/Vosk。"""
-        global _volc_status, _asr_adapter
-        if _volc_status == "bad":
-            return
-        _volc_status = "bad"
-        _asr_adapter = None
-        logger.warning("豆包 ASR 资源未开通或鉴权失败，已自动降级到离线识别")
 
     async def stream_transcribe(self, audio: bytes, *, language: str = "zh"):
         # 豆包 HTTP 极速版不支持原生流式，先整体识别再切片输出（模拟流式）
         result = await self.transcribe(audio, language=language)
-        import re as _re_mod
 
-        tokens = _re_mod.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9]+|[，。、！？]", result.text)
+        tokens = re.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9]+|[，。、！？]", result.text)
         if not tokens and result.text:
             tokens = [result.text]
         for tk in tokens:
             yield tk
         yield ""
+
+
+def _mark_volc_cooldown(seconds: float) -> None:
+    """标记豆包 ASR 进入冷却期并清空适配器缓存，下次请求自动走离线识别。"""
+    global _asr_adapter, _volc_cooldown_until
+    _volc_cooldown_until = max(_volc_cooldown_until, time.monotonic() + seconds)
+    _asr_adapter = None
+    logger.warning("豆包 ASR 不可用，冷却 {:.0f}s 后自动重试（期间使用离线识别）", seconds)
+
+
+def _clear_volc_cooldown() -> None:
+    global _volc_cooldown_until
+    _volc_cooldown_until = 0.0
 
 
 def get_asr_adapter() -> ASRAdapter:
@@ -492,12 +546,13 @@ def get_asr_adapter() -> ASRAdapter:
     优先级：豆包大模型ASR > OpenAI API > Whisper（高精度离线） > Vosk（兜底） > Mock
     （Whisper 首次需下载 small 模型约 244MB，国内环境可用）
     """
-    global _asr_adapter, _asr_adapter_name, _volc_status
+    global _asr_adapter, _asr_adapter_name
     if _asr_adapter is not None:
         return _asr_adapter
 
-    # 1. 豆包大模型极速版 HTTP ASR（配置 VOLC_ASR_X_API_KEY 即启用，_volc_status=bad 时自动跳过）
-    if settings.volc_asr_app_key and _volc_status != "bad":
+    # 1. 豆包大模型极速版 HTTP ASR（配置 VOLC_ASR_X_API_KEY 即启用；
+    #    处于冷却期时自动跳过，冷却到期后自动恢复重试）
+    if settings.volc_asr_app_key and not _volc_in_cooldown():
         try:
             _asr_adapter = VolcFlashASRAdapter()
             _asr_adapter_name = "豆包大模型"
@@ -505,7 +560,7 @@ def get_asr_adapter() -> ASRAdapter:
             return _asr_adapter
         except Exception as e:  # noqa: BLE001
             logger.warning("豆包ASR初始化失败：{}", e)
-            _volc_status = "bad"
+            _mark_volc_cooldown(_AUTH_COOLDOWN_S)
 
     # 2. OpenAI Whisper 兼容 API
     if settings.asr_api_key:

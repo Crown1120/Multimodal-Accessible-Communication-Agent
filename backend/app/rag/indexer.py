@@ -10,7 +10,6 @@ import hashlib
 import re
 from pathlib import Path
 
-from app.core.config import settings
 from app.core.logging import get_logger
 from app.rag.store import Document, VectorStore
 
@@ -18,11 +17,14 @@ logger = get_logger()
 
 _KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "knowledge"
 # 文件名 -> 场景
+# 注意：accessibility / transport 属跨场景通用内容，必须映射为 general，
+# 否则会被 retrieve 的 scene 过滤（hospital / government）永久排除，
+# 导致「无障碍服务」这类差异化知识根本召回不到。
 _SCENE_MAP = {
     "hospital": "hospital",
     "government": "government",
-    "accessibility": "accessibility",
-    "transport": "transport",
+    "accessibility": "general",
+    "transport": "general",
 }
 
 

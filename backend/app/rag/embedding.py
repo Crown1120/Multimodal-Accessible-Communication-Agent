@@ -28,14 +28,21 @@ def embed_text(text: str) -> Counter[str]:
     return Counter(text[i : i + _NG] for i in range(len(text) - _NG + 1))
 
 
+def dot(a: Counter[str], b: Counter[str]) -> float:
+    """只在共同 key 上计算点积（Counter 交集取最小计数）。"""
+    return float(sum((a & b).values()))
+
+
+def vector_norm(vec: Counter[str]) -> float:
+    """向量模长。文档向量可预计算，避免每次查询重复计算。"""
+    return math.sqrt(sum(v * v for v in vec.values()))
+
+
 def cosine(a: Counter[str], b: Counter[str]) -> float:
     if not a or not b:
         return 0.0
-    # 只在共同 key 上计算点积
-    common = a & b  # Counter 交集取最小计数
-    dot = sum(common.values())
-    if dot == 0:
+    na = vector_norm(a)
+    nb = vector_norm(b)
+    if not na or not nb:
         return 0.0
-    na = math.sqrt(sum(v * v for v in a.values()))
-    nb = math.sqrt(sum(v * v for v in b.values()))
-    return dot / (na * nb) if na and nb else 0.0
+    return dot(a, b) / (na * nb)

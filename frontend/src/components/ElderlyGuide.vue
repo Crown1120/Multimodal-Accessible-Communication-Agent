@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
 const showGuide = ref(false)
 const step = ref(0)
+const nextBtnRef = ref<HTMLButtonElement | null>(null)
 
 const GUIDE_KEY = 'bridge_elderly_guide_shown'
 
@@ -12,27 +13,28 @@ const steps = [
   {
     title: '欢迎使用 Bridge 无障碍沟通',
     desc: '这是为您设计的老年模式，字体更大、操作更简单。',
-    target: null,
   },
   {
     title: '在这里输入您的问题',
     desc: '点击下方输入框，输入您想问的问题，然后点击发送按钮。',
-    target: '.input-bar',
   },
   {
     title: '也可以直接说话',
     desc: '点击麦克风按钮，直接说出您的问题，系统会自动识别。',
-    target: '.audio-input',
   },
   {
     title: '数字人会回答您',
     desc: '屏幕中的数字人会用语音和文字回答您的问题，请放心使用。',
-    target: '.stage',
   },
 ]
 
 onMounted(() => {
   checkGuide()
+  window.addEventListener('keydown', onKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
 })
 
 watch(
@@ -41,6 +43,22 @@ watch(
     if (mode === 'elderly') checkGuide()
   },
 )
+
+watch(showGuide, async (visible) => {
+  if (visible) {
+    // 打开后把焦点移入弹层，键盘用户不会迷失在原页面
+    await nextTick()
+    nextBtnRef.value?.focus()
+  }
+})
+
+// Esc 关闭弹层（无障碍要求）
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && showGuide.value) {
+    e.preventDefault()
+    skip()
+  }
+}
 
 function checkGuide() {
   if (store.mode !== 'elderly') return
@@ -73,13 +91,19 @@ function skip() {
   <Teleport to="body">
     <Transition name="guide-fade">
       <div v-if="showGuide" class="guide-overlay" @click.self="skip">
-        <div class="guide-card">
+        <div
+          class="guide-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="elderly-guide-title"
+          aria-describedby="elderly-guide-desc"
+        >
           <div class="guide-step">{{ step + 1 }} / {{ steps.length }}</div>
-          <h3 class="guide-title">{{ steps[step].title }}</h3>
-          <p class="guide-desc">{{ steps[step].desc }}</p>
+          <h3 id="elderly-guide-title" class="guide-title">{{ steps[step].title }}</h3>
+          <p id="elderly-guide-desc" class="guide-desc">{{ steps[step].desc }}</p>
           <div class="guide-actions">
-            <button class="guide-skip" @click="skip">跳过</button>
-            <button class="guide-next" @click="next">
+            <button class="guide-skip" type="button" @click="skip">跳过</button>
+            <button ref="nextBtnRef" class="guide-next" type="button" @click="next">
               {{ step < steps.length - 1 ? '下一步' : '开始使用' }}
             </button>
           </div>

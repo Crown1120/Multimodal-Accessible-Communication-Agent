@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 
 import BIcon from '@/components/BIcon.vue'
 import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
 const open = ref(false)
+const panelRef = ref<HTMLElement | null>(null)
+const toggleRef = ref<HTMLButtonElement | null>(null)
 
 const fontSizes = [
   { value: 'small' as const, label: '小' },
@@ -21,11 +23,49 @@ const speechRates = [
 function toggle() {
   open.value = !open.value
 }
+
+function close() {
+  open.value = false
+  // 关闭后把焦点还给触发按钮，键盘用户不会丢失位置
+  nextTick(() => toggleRef.value?.focus())
+}
+
+// Esc 关闭 + 点击面板外部关闭
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && open.value) {
+    e.preventDefault()
+    close()
+  }
+}
+
+function onDocumentClick(e: MouseEvent) {
+  if (!open.value) return
+  const target = e.target as Node | null
+  if (target && !panelRef.value?.contains(target)) close()
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  document.addEventListener('click', onDocumentClick)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('click', onDocumentClick)
+})
+
+watch(open, async (visible) => {
+  if (!visible) return
+  await nextTick()
+  // 打开后焦点移入面板内的第一个控件
+  panelRef.value?.querySelector<HTMLButtonElement>('button')?.focus()
+})
 </script>
 
 <template>
-  <div class="pref-panel">
+  <div ref="panelRef" class="pref-panel">
     <button
+      ref="toggleRef"
       class="pref-toggle"
       :class="{ on: open }"
       :aria-expanded="open"
@@ -37,7 +77,7 @@ function toggle() {
     </button>
 
     <Transition name="slide">
-      <div v-if="open" class="pref-body" role="dialog" aria-label="无障碍偏好">
+      <div v-if="open" class="pref-body" role="dialog" aria-modal="true" aria-label="无障碍偏好">
         <div class="pref-title">无障碍偏好</div>
 
         <!-- 字号 -->
@@ -80,6 +120,19 @@ function toggle() {
             :class="{ on: store.highContrast }"
             :aria-pressed="store.highContrast"
             @click="store.setHighContrast(!store.highContrast)"
+          >
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+
+        <!-- 轮椅模式 -->
+        <div class="pref-row">
+          <span class="pref-label">轮椅模式</span>
+          <button
+            class="toggle-btn"
+            :class="{ on: store.wheelchairMode }"
+            :aria-pressed="store.wheelchairMode"
+            @click="store.setWheelchairMode(!store.wheelchairMode)"
           >
             <span class="toggle-knob"></span>
           </button>

@@ -26,12 +26,21 @@ export const useSessionStore = defineStore('session', () => {
   const speakingRunId = ref<string | null>(null) // 当前播报所属 run_id（防异步音频串消息）
   const speakingGesture = ref<string>('idle') // 数字人手势动作
   const speakingExpression = ref<string>('neutral') // 数字人表情
+  // 本地播报请求计数：由 speak() 递增，驱动 DigitalHuman 立即播报
+  // （区别于 SSE 的 digital_human.speak，后者要等 TTS 音频就绪）
+  const speakTick = ref<number>(0)
   const widgets = ref<WidgetData[]>([])
   const recording = ref<boolean>(false) // 是否正在录音
   const sending = ref<boolean>(false) // 是否正在发送消息
   const flash = ref<boolean>(false) // 听障模式闪光通知
+const wheelchairMode = ref<boolean>(false) // 轮椅模式（无障碍路线）
+const emotion = ref<string>('neutral') // 当前对话情绪（neutral/anxious/painful/calm/happy）
+const emotionConfidence = ref<number>(0) // 情绪识别置信度
   const lastError = ref<string>('') // 最近错误提示
   const asrAdapter = ref<string>('') // 当前实际使用的ASR适配器（豆包大模型/Whisper离线/Vosk离线/演示模式）
+  // 后端公开配置（输入长度上限等），由 loadPublicConfig 拉取
+  const maxMessageLength = ref<number>(2000)
+  const maxUploadMb = ref<number>(10)
 
   // 独立无障碍偏好（可手动调整，随模式联动但有独立覆盖）
   const fontSize = ref<'small' | 'medium' | 'large'>('medium')
@@ -39,6 +48,25 @@ export const useSessionStore = defineStore('session', () => {
   const highContrast = ref<boolean>(false)
 
   let unsubscribe: (() => void) | null = null
+  // 待清理的定时器句柄（切换会话 / 卸载时统一清除，避免旧定时器污染新会话状态）
+  let flashTimer: ReturnType<typeof setTimeout> | null = null
+  let agentIdleTimer: ReturnType<typeof setTimeout> | null = null
+  let errorTimer: ReturnType<typeof setTimeout> | null = null
+
+  function clearTimers() {
+    if (flashTimer !== null) {
+      clearTimeout(flashTimer)
+      flashTimer = null
+    }
+    if (agentIdleTimer !== null) {
+      clearTimeout(agentIdleTimer)
+      agentIdleTimer = null
+    }
+    if (errorTimer !== null) {
+      clearTimeout(errorTimer)
+      errorTimer = null
+    }
+  }
 
   const isConnected = computed(() => status.value === 'connected')
 
@@ -54,6 +82,7 @@ export const useSessionStore = defineStore('session', () => {
       // 清空上一轮会话的状态
       unsubscribe?.()
       unsubscribe = null
+      clearTimers()
       messages.value = []
       widgets.value = []
       transcript.value = ''
@@ -78,6 +107,7 @@ export const useSessionStore = defineStore('session', () => {
       subscribe()
       // 加载已保存的用户偏好
       await loadPreferences()
+      await loadPublicConfig()
     } catch (e) {
       status.value = 'error'
       throw e
@@ -99,19 +129,24 @@ export const useSessionStore = defineStore('session', () => {
         transcript.value = (d.text as string) ?? ''
         transcriptSpeaker.value = (d.speaker as string) ?? ''
         break
-      case 'transcript.final':
+      case 'transcript.final': {
         transcript.value = ''
         transcriptSpeaker.value = ''
+        // 优先使用服务端持久化消息的 ID，保证与历史记录一致（避免刷新后出现重复消息）
+        const serverId = (d.message_id as string) || crypto.randomUUID()
+        if (messages.value.some((m) => m.id === serverId)) break
         messages.value.push({
-          id: crypto.randomUUID(),
+          id: serverId,
           session_id: event.session_id,
           // 语音转写的用户消息显示在右侧（与文字输入一致）
           role: d.speaker === 'assistant' ? 'assistant' : 'user',
           content: (d.text as string) ?? '',
           speaker: d.speaker as string,
           message_type: 'transcript',
+          send_status: 'sent',
         })
         break
+      }
       case 'agent.started':
         agentStatus.value = 'running'
         agentDetail.value = d.intent ? `识别意图：${d.intent}` : ''
@@ -123,7 +158,11 @@ export const useSessionStore = defineStore('session', () => {
       case 'agent.completed':
         agentStatus.value = 'completed'
         agentDetail.value = (d.summary as string) ?? ''
-        setTimeout(() => (agentStatus.value = 'idle'), 1500)
+        if (agentIdleTimer !== null) clearTimeout(agentIdleTimer)
+        agentIdleTimer = setTimeout(() => {
+          agentStatus.value = 'idle'
+          agentIdleTimer = null
+        }, 1500)
         break
       case 'message.delta': {
         // Use the run ID so interleaved or replayed events cannot update another reply.
@@ -157,7 +196,11 @@ export const useSessionStore = defineStore('session', () => {
         let idx = d.message_id ? messages.value.findIndex((m) => m.id === d.message_id) : -1
         if (idx < 0 && d.run_id) idx = messages.value.findIndex((m) => m.run_id === d.run_id)
         if (idx >= 0) {
-          messages.value[idx].id = (d.message_id as string) ?? messages.value[idx].id
+          const serverId = d.message_id as string | undefined
+          // 仅在没有其他消息占用该 ID 时回写，避免列表出现重复 key
+          if (serverId && !messages.value.some((m, i) => i !== idx && m.id === serverId)) {
+            messages.value[idx].id = serverId
+          }
           messages.value[idx].content = content
           messages.value[idx].send_status = 'sent'
         } else {
@@ -229,7 +272,11 @@ export const useSessionStore = defineStore('session', () => {
         break
       case 'error':
         lastError.value = (d.message as string) ?? '发生未知错误'
-        setTimeout(() => (lastError.value = ''), 5000)
+        if (errorTimer !== null) clearTimeout(errorTimer)
+        errorTimer = setTimeout(() => {
+          lastError.value = ''
+          errorTimer = null
+        }, 5000)
         break
     }
   }
@@ -247,9 +294,16 @@ export const useSessionStore = defineStore('session', () => {
       send_status: 'pending',
     })
     try {
-      await api.sendMessage(sessionId.value, { role: 'user', content })
+      const res = await api.sendMessage(sessionId.value, { role: 'user', content })
       const localMessage = messages.value.find((m) => m.id === localId)
-      if (localMessage) localMessage.send_status = 'sent'
+      if (localMessage) {
+        // 回写服务端 message_id，使后续事件/历史记录按同一 ID 关联；
+        // 保留 localId 到服务端 ID 的映射前，先确认没有同 ID 的消息（避免 key 冲突）
+        if (res.message_id && !messages.value.some((m) => m.id === res.message_id)) {
+          localMessage.id = res.message_id
+        }
+        localMessage.send_status = 'sent'
+      }
     } catch (error) {
       const localMessage = messages.value.find((m) => m.id === localId)
       if (localMessage) localMessage.send_status = 'failed'
@@ -263,16 +317,66 @@ export const useSessionStore = defineStore('session', () => {
   function flashNotification() {
     if (mode.value !== 'hearing') return
     flash.value = true
+    // 兜底：若 message.completed / 播报结束事件丢失，30s 后自动停止闪烁，
+    // 避免边框无限闪烁（对光敏用户有害）
+    if (flashTimer !== null) clearTimeout(flashTimer)
+    flashTimer = setTimeout(() => {
+      flash.value = false
+  wheelchairMode.value = false
+  emotion.value = 'neutral'
+  emotionConfidence.value = 0
+      flashTimer = null
+    }, 30000)
   }
   // 停止闪光通知
   function stopFlash() {
+    if (flashTimer !== null) {
+      clearTimeout(flashTimer)
+      flashTimer = null
+    }
     flash.value = false
+  wheelchairMode.value = false
+  emotion.value = 'neutral'
+  emotionConfidence.value = 0
+  }
+
+  /**
+   * 本地播报一段文本（「重复一遍」按钮、路线语音导航）。
+   *
+   * 与 SSE 的 digital_human.speak 不同：这里没有后端 TTS 音频，
+   * 通过递增 speakTick 让 DigitalHuman 立即用 SDK / 浏览器 TTS 播报，
+   * 不必等 4 秒的音频兜底定时器。
+   */
+  function speak(
+    text: string,
+    opts: { speed?: number; gesture?: string; expression?: string } = {},
+  ) {
+    const content = (text || '').trim()
+    if (!content) return
+    speaking.value = true
+    speakingText.value = content
+    speakingAudioUrl.value = null
+    speakingRunId.value = null
+    speakingSpeed.value = opts.speed ?? 1.0
+    speakingGesture.value = opts.gesture ?? 'idle'
+    speakingExpression.value = opts.expression ?? 'neutral'
+    needRepeat.value = false
+    transcript.value = content
+    transcriptSpeaker.value = 'assistant'
+    flashNotification()
+    speakTick.value += 1
   }
 
   // 上传音频（ASR 转字幕 + 触发 Agent）
   async function uploadAudio(audio: Blob, speaker = 'staff') {
     if (!sessionId.value) return
     recording.value = false
+    // 上传前先按后端上限做本地校验，避免白传一个大文件再被 413 拒绝
+    const limitBytes = maxUploadMb.value * 1024 * 1024
+    if (limitBytes > 0 && audio.size > limitBytes) {
+      lastError.value = `录音过长（超过 ${maxUploadMb.value} MB），请缩短后再试`
+      return
+    }
     try {
       const res = await api.uploadAudio(sessionId.value, audio, { speaker })
       if (!res.ok) {
@@ -357,6 +461,17 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  // 加载后端公开配置（输入长度上限等），失败时保留默认值
+  async function loadPublicConfig() {
+    try {
+      const cfg = await api.getPublicConfig()
+      if (cfg.max_message_length > 0) maxMessageLength.value = cfg.max_message_length
+      if (cfg.max_upload_mb > 0) maxUploadMb.value = cfg.max_upload_mb
+    } catch {
+      // 后端不可用时保持默认值
+    }
+  }
+
   // 加载用户偏好
   async function loadPreferences() {
     if (!sessionId.value) return
@@ -403,6 +518,9 @@ export const useSessionStore = defineStore('session', () => {
       mode.value = (session.mode as Mode) || mode.value
       scene.value = (session.scene as Scene) || scene.value
       status.value = 'connected'
+      // 同步无障碍属性，保证恢复后样式与模式一致
+      document.documentElement.setAttribute('data-mode', mode.value)
+      applyAccessibilityAttrs()
       // 加载消息历史
       try {
         const history = await api.getMessages(savedId)
@@ -414,12 +532,14 @@ export const useSessionStore = defineStore('session', () => {
           speaker: m.speaker,
           language: m.language,
           message_type: m.message_type as Message['message_type'],
+          send_status: 'sent',
         }))
       } catch {
         /* 历史加载失败不阻断 */
       }
       subscribe()
       await loadPreferences()
+      await loadPublicConfig()
       return true
     } catch {
       // 会话不存在或已失效，清除并返回 false
@@ -450,6 +570,7 @@ export const useSessionStore = defineStore('session', () => {
   function $reset() {
     unsubscribe?.()
     unsubscribe = null
+    clearTimers()
     sessionId.value = null
     status.value = 'disconnected'
     messages.value = []
@@ -493,10 +614,13 @@ export const useSessionStore = defineStore('session', () => {
     needRepeat,
     speakingGesture,
     speakingExpression,
+    speakTick,
     widgets,
     recording,
     lastError,
     asrAdapter,
+    maxMessageLength,
+    maxUploadMb,
     fontSize,
     speechRate,
     highContrast,
@@ -505,6 +629,12 @@ export const useSessionStore = defineStore('session', () => {
     flash,
     flashNotification,
     stopFlash,
+    wheelchairMode,
+    setWheelchairMode,
+    emotion,
+    emotionConfidence,
+    setEmotion,
+    speak,
     isHighContrast,
     isLargeFont,
     isSlowSpeech,

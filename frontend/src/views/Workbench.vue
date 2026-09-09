@@ -4,8 +4,10 @@ import { computed, onMounted, watch } from 'vue'
 import BIcon from '@/components/BIcon.vue'
 import DigitalHuman from '@/components/DigitalHuman.vue'
 import InputBar from '@/components/InputBar.vue'
+import MessageList from '@/components/MessageList.vue'
 import ModeSwitcher from '@/components/ModeSwitcher.vue'
 import PreferencePanel from '@/components/PreferencePanel.vue'
+import SubtitleBar from '@/components/SubtitleBar.vue'
 import Toast from '@/components/Toast.vue'
 import ElderlyGuide from '@/components/ElderlyGuide.vue'
 import { useToast } from '@/composables/useToast'
@@ -22,17 +24,22 @@ watch(
   },
 )
 
-// 自动创建会话：页面加载即连接，无需用户点击
+// 自动连接：优先恢复上次会话（刷新页面后不丢历史），否则新建
+async function connectOnce() {
+  const restored = await store.restoreSession()
+  if (!restored) await store.createSession()
+}
+
 async function autoConnect() {
   try {
-    await store.createSession()
+    await connectOnce()
   } catch (e) {
     console.error('自动连接失败，将在 3 秒后重试', e)
     // 失败后自动重试（最多 3 次）
     for (let attempt = 0; attempt < 3; attempt++) {
       await new Promise((r) => setTimeout(r, 3000))
       try {
-        await store.createSession()
+        await connectOnce()
         return
       } catch {
         console.warn(`自动连接重试 ${attempt + 1}/3 失败`)
@@ -76,6 +83,7 @@ const statusInfo = computed(() => {
 
 <template>
   <div class="workbench" :class="{ flash: store.flash }">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
     <header class="topbar">
       <div class="brand">
         <div class="brand-logo">
@@ -104,13 +112,19 @@ const statusInfo = computed(() => {
       </div>
     </header>
 
-    <main class="body">
+    <main id="main-content" class="body">
       <!-- 视频通话主画面：数字人居中，服务信息也收纳在数字人框内 -->
       <section class="stage" aria-label="视频通话画面">
         <DigitalHuman />
         <div class="control-bar">
           <InputBar />
         </div>
+      </section>
+
+      <!-- 沟通记录栏：实时字幕 + 双向消息历史（听障沟通核心） -->
+      <section class="conversation" aria-label="沟通记录">
+        <SubtitleBar />
+        <MessageList />
       </section>
     </main>
     <Toast />
@@ -244,25 +258,54 @@ const statusInfo = computed(() => {
   }
 }
 
-/* ===== 主体：全屏视频通话画面 ===== */
+/* ===== 主体：视频通话画面 + 沟通记录栏 ===== */
 .body {
   flex: 1;
   display: flex;
+  gap: 14px;
   min-height: 0;
   padding: 14px 18px 18px;
 }
 
 .stage {
-  flex: 1;
+  flex: 1 1 58%;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   border-radius: var(--radius-lg);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
   position: relative;
+}
+
+/* 沟通记录栏：实时字幕 + 消息历史 */
+.conversation {
+  flex: 1 1 42%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+/* 窄屏 / 分屏场景：改为上下排列，保证字幕始终可见 */
+@media (max-width: 1080px) {
+  .body {
+    flex-direction: column;
+  }
+  .stage {
+    flex: 1 1 55%;
+  }
+  .conversation {
+    flex: 1 1 45%;
+  }
 }
 
 /* 视频通话控制条：输入 + 麦克风 */
@@ -275,7 +318,7 @@ const statusInfo = computed(() => {
   flex-shrink: 0;
 }
 
-/* 听障模式闪光通知：重要消息时页面边框闪烁 */
+/* 听障模式闪光通知：重要消息时页面边框闪烁（有限次数，避免无限闪烁） */
 .workbench.flash::before {
   content: '';
   position: fixed;
@@ -283,7 +326,7 @@ const statusInfo = computed(() => {
   border: 6px solid #ffd700;
   pointer-events: none;
   z-index: 9998;
-  animation: flash-border 0.6s ease-in-out infinite;
+  animation: flash-border 0.6s ease-in-out 6;
 }
 @keyframes flash-border {
   0%,
@@ -295,31 +338,10 @@ const statusInfo = computed(() => {
   }
 }
 
-/* 视障/键盘导航增强：焦点环强化 */
-*:focus-visible {
-  outline: 3px solid #4f6ef7 !important;
-  outline-offset: 2px !important;
-  border-radius: 4px;
-}
-/* 听障模式下焦点环用高对比度黄色 */
-[data-mode='hearing'] *:focus-visible {
-  outline-color: #ffd700 !important;
-  outline-width: 4px !important;
-}
-/* 跳过导航链接（键盘用户快速跳到主内容） */
-.skip-link {
-  position: absolute;
-  top: -40px;
-  left: 0;
-  background: #4f6ef7;
-  color: #fff;
-  padding: 8px 16px;
-  z-index: 10001;
-  transition: top 0.2s;
-}
-.skip-link:focus {
-  top: 0;
-}
+/* 焦点环与 skip-link 已移至全局 src/style.css：
+   scoped 样式会把 `*:focus-visible` 编译为 `*:focus-visible[data-v-x]`，
+   对子组件内的按钮/输入框不生效。 */
+
 /* 老年模式下所有可点击元素更大 */
 [data-mode='elderly'] button,
 [data-mode='elderly'] textarea,

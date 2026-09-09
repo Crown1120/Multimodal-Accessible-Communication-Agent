@@ -8,7 +8,7 @@ on:
 
 jobs:
   backend-test:
-    name: Backend Tests
+    name: Backend Lint & Tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -22,13 +22,20 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio httpx
+          pip install -r requirements-dev.txt
+
+      - name: Ruff lint
+        run: ruff check app tests
+
+      - name: Mypy type check
+        run: mypy
 
       - name: Run tests
         env:
@@ -38,8 +45,14 @@ jobs:
         run: |
           python -m pytest tests/ -v --tb=short
 
+      - name: Verify Alembic migrations apply cleanly
+        env:
+          SQLITE_URL: sqlite+aiosqlite:///./migration_check.db
+        run: |
+          alembic upgrade head
+
   frontend-build:
-    name: Frontend Build
+    name: Frontend Lint, Type Check & Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -58,8 +71,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint
+        run: npm run lint:ci
+
+      - name: Prettier check
+        run: npm run format:check
+
       - name: Type check
-        run: npx vue-tsc --noEmit
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test
 
       - name: Build
         run: npm run build

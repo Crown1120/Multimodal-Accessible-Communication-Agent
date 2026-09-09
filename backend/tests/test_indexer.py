@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.rag.indexer import _infer_scene, _is_noise_body, _split_by_headers, index_knowledge
-from app.rag.store import InMemoryVectorStore
+from app.rag.store import Document, InMemoryVectorStore
 
 
 class TestSceneInference:
@@ -22,12 +22,38 @@ class TestSceneInference:
         assert _infer_scene("government_guide.md") == "government"
         assert _infer_scene("government_services.md") == "government"
 
-    def test_accessibility(self):
-        assert _infer_scene("accessibility_guide.md") == "accessibility"
+    def test_accessibility_maps_to_general(self):
+        """无障碍内容跨场景通用，必须映射为 general 才能被任何场景召回。"""
+        assert _infer_scene("accessibility_guide.md") == "general"
 
     def test_unknown_returns_general(self):
         assert _infer_scene("random_file.md") == "general"
         assert _infer_scene("README.md") == "general"
+
+
+class TestSceneFiltering:
+    """检索时 scene 过滤测试：通用文档必须能被任意场景召回。"""
+
+    @pytest.mark.asyncio
+    async def test_general_docs_are_retrievable_from_both_scenes(self):
+        store = InMemoryVectorStore()
+        await store.add(
+            [
+                Document(
+                    id="h1",
+                    text="骨科在门诊二楼外科区域",
+                    metadata={"scene": "hospital", "language": "zh"},
+                ),
+                Document(
+                    id="a1",
+                    text="无障碍服务：一楼总服务台可借用轮椅和实时字幕设备",
+                    metadata={"scene": "general", "language": "zh"},
+                ),
+            ]
+        )
+        for scene in ("hospital", "government"):
+            docs = await store.query("无障碍 轮椅 字幕设备", k=4, where={"language": "zh", "scene": [scene, "general"]})
+            assert any(d.id == "a1" for d in docs), f"scene={scene} 未召回通用文档"
 
 
 class TestSplitByHeaders:
@@ -72,6 +98,32 @@ class TestNoiseFilter:
     def test_real_content_is_not_noise(self):
         assert _is_noise_body("这是一段真实的内容。") is False
         assert _is_noise_body("# 标题\n\n正文内容") is False
+
+
+class TestKnowledgeWatcher:
+    """热加载监控（回归：启动后第一轮轮询不应误判为「文件变化」而重复重建索引）。"""
+
+    class _StubRAG:
+        def __init__(self) -> None:
+            self.reindex_calls = 0
+
+        async def reindex(self) -> int:
+            self.reindex_calls += 1
+            return 0
+
+    @pytest.mark.asyncio
+    async def test_no_spurious_rebuild_after_start(self):
+        from app.rag.watcher import KnowledgeWatcher
+
+        rag = self._StubRAG()
+        watcher = KnowledgeWatcher(rag, interval=0.05)  # type: ignore[arg-type]
+        await watcher.start()
+        try:
+            assert rag.reindex_calls == 1  # 仅首次索引
+            assert watcher._has_changed() is False  # 没有变化
+            assert rag.reindex_calls == 1
+        finally:
+            await watcher.stop()
 
 
 class TestIndexKnowledge:

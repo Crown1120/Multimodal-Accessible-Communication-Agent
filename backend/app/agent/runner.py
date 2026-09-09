@@ -5,14 +5,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.adapters.digital_human import get_digital_human_adapter
 from app.agent.graph import get_agent
 from app.agent.state import AgentState
-from app.adapters.digital_human import get_digital_human_adapter
+from app.core.config import settings
 from app.core.events import EventType, make_event
 from app.core.logging import get_logger
 from app.core.task_manager import background_tasks
@@ -26,19 +26,22 @@ from app.services.event_bus import event_bus
 
 logger = get_logger()
 
+# 提供给 LLM 的对话历史窗口（条）
+_HISTORY_WINDOW = 20
+
 
 class AgentRunner:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def run(self, session: Session, user_text: str, message_id: str) -> None:
+    async def run(self, session: Session, user_text: str, message_id: str, run_id: str) -> None:
         started_at = time.perf_counter()
         sid = session.id
         run_repo = AgentRunRepository(self.db)
         msg_repo = MessageRepository(self.db)
         session_repo = SessionRepository(self.db)
 
-        run = await run_repo.create(session_id=sid, intent=None)
+        run = await run_repo.create(session_id=sid, intent=None, run_id=run_id)
 
         # 1. agent.started
         await event_bus.publish(
@@ -50,13 +53,13 @@ class AgentRunner:
         # 持有未提交的写事务，导致并发创建会话/发消息时 database is locked。
         await self.db.commit()
 
-        # 2. 取历史（排除当前用户消息）
-        history_orm = await session_repo.list_messages(sid)
+        # 2. 取历史（排除当前用户消息；仅取最近窗口，避免长会话全表拉取）
+        history_orm = await session_repo.list_messages(sid, limit=_HISTORY_WINDOW + 5)
         history = [
             {"role": m.role, "content": m.content}
             for m in history_orm
             if m.id != message_id
-        ][-20:]
+        ][-_HISTORY_WINDOW:]
 
         state: AgentState = {
             "session_id": sid,
@@ -77,9 +80,11 @@ class AgentRunner:
             final = await get_agent().run(state)
         except Exception as e:  # noqa: BLE001
             logger.exception("Agent 图执行失败")
+            # 异常详情仅在调试模式下返回，避免泄漏内部实现
+            error_details = {"reason": str(e)} if settings.debug else {}
             await event_bus.publish(
                 sid,
-                make_event(EventType.ERROR, sid, 0, code="ERR_3001", message="Agent 处理异常", details={"reason": str(e)}),
+                make_event(EventType.ERROR, sid, 0, code="ERR_3001", message="Agent 处理异常", details=error_details),
             )
             final = {**state, "reply": "抱歉，处理出现异常，请稍后重试或到服务台寻求帮助。"}
 
@@ -108,7 +113,7 @@ class AgentRunner:
         )
         dh = get_digital_human_adapter()
         # 先构造不含音频的 speak payload（快速推送，前端立即驱动嘴型/字幕）
-        speak_payload = await _build_speak_payload_without_audio(dh, reply, session.mode)
+        speak_payload = dh.build_speak_payload(reply, mode=session.mode)
         await event_bus.publish(
             sid,
             make_event(EventType.DIGITAL_HUMAN_SPEAK, sid, 0, run_id=run.id, **speak_payload),
@@ -121,7 +126,9 @@ class AgentRunner:
 
         # 6. agent.completed
         duration_ms = int((time.perf_counter() - started_at) * 1000)
-        await run_repo.complete(run.id, status="completed", duration_ms=duration_ms)
+        await run_repo.complete(
+            run.id, status="completed", duration_ms=duration_ms, intent=final.get("intent")
+        )
         await event_bus.publish(
             sid,
             make_event(
@@ -134,27 +141,6 @@ class AgentRunner:
         )
 
         await self.db.commit()
-
-
-async def _build_speak_payload_without_audio(dh, text: str, mode: str) -> dict:
-    """构造不含音频的 speak payload（复用适配器的情感/手势/语速推断逻辑）。
-
-    通过临时替换 TTS 为 No-op 实现，避免等待 2-3 秒的音频合成。
-    """
-    original_tts = dh._tts
-
-    class _NoopTTS:
-        async def synthesize(self, text, *, speed=1.0):
-            from app.adapters.tts import TTSResult
-            return TTSResult(audio=None, format="mp3", duration=0)
-
-    dh._tts = _NoopTTS()
-    try:
-        payload = await dh.speak(text, mode=mode)
-    finally:
-        dh._tts = original_tts
-    payload.pop("audio_url", None)
-    return payload
 
 
 async def _synthesize_and_publish_audio(session_id: str, dh, text: str, speed: float, run_id: str) -> None:
@@ -175,6 +161,35 @@ async def _synthesize_and_publish_audio(session_id: str, dh, text: str, speed: f
             )
     except Exception:  # noqa: BLE001
         logger.exception("异步音频合成失败 session={}", session_id)
+
+
+async def recover_stuck_runs(*, older_than_minutes: int = 5) -> int:
+    """把上次进程退出时遗留的 running 运行标记为 abandoned。
+
+    服务被强杀（容器重建、OOM）时，后台 Agent 任务会直接消失，
+    agent_runs 里就会留下永远 running 的记录，影响统计与排查。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+    from sqlalchemy.engine import CursorResult
+
+    from app.models.database import async_session_factory
+    from app.models.db_models import AgentRun
+
+    # 库里存的是不带时区的 UTC 字符串，这里用同样的格式比较
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=older_than_minutes)
+    async with async_session_factory() as db:
+        result = await db.execute(
+            update(AgentRun)
+            .where(AgentRun.status == "running", AgentRun.created_at < cutoff)
+            .values(status="abandoned")
+        )
+        await db.commit()
+        count = result.rowcount if isinstance(result, CursorResult) else 0
+    if count:
+        logger.warning("已将 {} 条遗留的 Agent 运行标记为 abandoned", count)
+    return count
 
 
 # 兼容旧引用

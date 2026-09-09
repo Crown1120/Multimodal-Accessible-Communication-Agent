@@ -6,18 +6,21 @@ LangGraph 不可用时回退到顺序节点执行，节点逻辑保持一致。
 from __future__ import annotations
 
 import asyncio
-import re
+import time
 from typing import Any
 
 from app.adapters.llm import get_llm_adapter
 from app.agent.dialect import normalize as normalize_dialect
 from app.agent.state import AgentState
+from app.core.config import settings
 from app.core.events import EventType, make_event
 from app.core.logging import get_logger
 from app.mcp.registry import registry
 from app.mcp.tools import register_all_tools
 from app.rag.retriever import get_rag
+from app.repositories.tool_call_repo import record_tool_call
 from app.services.event_bus import event_bus
+from app.services.widget_store import widget_store
 
 logger = get_logger()
 
@@ -55,6 +58,11 @@ _PRIVACY_PERSON = (
 _PRIVACY_WEAK = (
     "病房", "病情", "检查结果", "化验", "报告", "诊断", "情况", "在哪", "在哪里", "住哪", "几楼", "怎么样",
 )
+# 取件/领取语义：涉及「检查结果在哪拿」这类正当问路问题，不应判为隐私查询
+_PICKUP_HINTS = (
+    "在哪拿", "在哪取", "去哪里拿", "去哪里取", "怎么拿", "怎么取", "哪里领取", "怎么领取",
+    "在哪领", "领取", "自助机", "打印报告", "取报告", "取结果", "拿报告", "拿结果",
+)
 
 # 隐私查询的固定拒绝话术（医院/政务通用口径）
 _PRIVACY_REPLY = (
@@ -70,6 +78,7 @@ _SCENE_PROMPTS: dict[str, str] = {
         "你是医院导诊无障碍沟通助手 Bridge，服务对象是来院就诊的患者和家属，包含老年人、听障人士和行动不便者。\n"
         "你可以提供：挂号指引、科室与诊室位置、就诊和检查流程、缴费取药指引、无障碍服务（手语翻译志愿者、轮椅借用、实时字幕设备）。\n"
         "回复要求：语气温和耐心、口语化、尽量简短；先说清地点或流程结论，再补充必要细节；一次聚焦一件事，可分成步骤说明；当患者可能行动不便时，主动提示可用的无障碍服务。\n"
+        "情感识别：当用户表达焦虑、紧张、痛苦、害怕等情绪时（如'我好害怕''很痛''怎么办''急死了'），先给予共情和安抚（如'我理解您的心情，请别着急'），再提供信息；语气要更加温和、缓慢，避免使用生硬的指令式语言。\n"
         "限制：不提供任何诊断、用药或治疗方案；科室位置拿不准时引导患者到一楼总服务台询问；"
         "危急优先：用户提及胸痛、呼吸困难、大出血、意识不清、严重外伤、疑似中风（口角歪斜/单侧无力/言语不清）、剧烈腹痛等危急症状时，第一句就要明确告知立即前往急诊科或拨打120，不要拖延、不要继续普通问答。"
         "隐私红线：严禁提供任何具体患者的个人信息、住院信息、病房床位信息、病情、检查结果或病历资料；"
@@ -79,13 +88,30 @@ _SCENE_PROMPTS: dict[str, str] = {
         "你是政务服务大厅无障碍沟通助手 Bridge，服务对象是前来办事的群众，包含老年人、听障人士和行动不便者。\n"
         "你可以提供：身份证、社保、公积金、户口、不动产等业务的办理窗口、所需材料、办理流程与时限；叫号与排队引导；无障碍便利（优先叫号、手语翻译、字幕大屏）。\n"
         "回复要求：语气规范清晰又不失亲切、口语化；先说清办理地点和窗口，再说明材料和流程；分步骤说明；提醒老年人和残疾人可优先叫号。\n"
+        "情感识别：当用户表达焦虑、着急、困惑等情绪时（如'怎么办''急死了''搞不懂'），先给予安抚（如'请别着急，我来帮您'），再提供信息；语气要更加耐心。\n"
         "限制：不承诺具体办理结果；办理时限和材料以窗口实际要求为准；不确定的业务引导群众到一楼导办台咨询。"
         "隐私红线：严禁提供任何个人的身份信息、办理记录或隐私资料；涉及查询他人信息（含亲友）一律礼貌拒绝，引导到窗口由工作人员按流程办理。"
     ),
 }
 
 
-def _build_scene_prompt(scene: str, rag_context: str = "") -> str:
+async def _publish_widget(session_id: str, *, widget_id: str, widget_type: str, payload: dict) -> None:
+    """下发 Widget：写入缓存（供回查）并推送 widget.show 事件。"""
+    await widget_store.put(widget_id, widget_type=widget_type, payload=payload)
+    await event_bus.publish(
+        session_id,
+        make_event(
+            EventType.WIDGET_SHOW,
+            session_id,
+            0,
+            widget_id=widget_id,
+            widget_type=widget_type,
+            payload=payload,
+        ),
+    )
+
+
+def _build_scene_prompt(scene: str, rag_context: str = "", wheelchair: bool = False) -> str:
     """按场景构建系统提示词；无匹配场景时给出通用公共服务话术。"""
     sys = _SCENE_PROMPTS.get(
         scene,
@@ -95,6 +121,8 @@ def _build_scene_prompt(scene: str, rag_context: str = "") -> str:
             "限制：只提供流程、地点和公开信息，不提供医疗诊断或处方。"
         ),
     )
+    if wheelchair:
+        sys += "\n\n轮椅模式：用户使用轮椅，所有路线指引必须优先选择无障碍通道（电梯、坡道、无障碍洗手间），避免楼梯和台阶；主动提示沿途无障碍设施位置。"
     if rag_context:
         sys += "\n\n参考知识（优先采用其中与本次问题相关的内容）：\n" + rag_context
     return sys
@@ -104,7 +132,9 @@ class BridgeAgent:
     """基于 LangGraph 的 Bridge Agent。"""
 
     def __init__(self) -> None:
-        self._graph = None
+        self._graph: Any = None
+        # LangGraph 不可用（导入失败/编译失败）时置位，避免每次运行都重试构建
+        self._graph_unavailable = False
         self._init_tools()
 
     def _init_tools(self) -> None:
@@ -124,8 +154,28 @@ class BridgeAgent:
     async def route(self, state: AgentState) -> dict:
         text = state.get("user_text", "")
         intent = self._classify(text)
+        # 规则无法判定（落到 knowledge 兜底）时，用 LLM 再判一次；
+        # 失败或超时则保持规则结果，保证主流程不受影响。
+        if intent == "knowledge" and settings.llm_intent_enabled:
+            refined = await self._llm_classify(text, state.get("scene", "hospital"))
+            if refined:
+                intent = refined
         await self._thinking(state, "route", f"识别意图：{intent}")
         return {"intent": intent}
+
+    async def _llm_classify(self, text: str, scene: str) -> str | None:
+        """LLM 意图分类（带超时与降级）。"""
+        if len(text) < 4:
+            return None
+        try:
+            adapter = get_llm_adapter(scene=scene)
+            return await asyncio.wait_for(
+                adapter.classify_intent(text, scene=scene),
+                timeout=settings.llm_intent_timeout_seconds,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("LLM 意图分类异常，回退规则：{}", e)
+            return None
 
     async def retrieve(self, state: AgentState) -> dict:
         sid = state["session_id"]
@@ -136,16 +186,11 @@ class BridgeAgent:
         )
         # 展示知识来源 Widget
         if res.get("sources"):
-            await event_bus.publish(
+            await _publish_widget(
                 sid,
-                make_event(
-                    EventType.WIDGET_SHOW,
-                    sid,
-                    0,
-                    widget_id=f"src_{sid}",
-                    widget_type="knowledge_source",
-                    payload={"sources": res["sources"], "confident": res["confident"]},
-                ),
+                widget_id=f"src_{sid}",
+                widget_type="knowledge_source",
+                payload={"sources": res["sources"], "confident": res["confident"]},
             )
         return {
             "rag_context": res.get("context", ""),
@@ -166,28 +211,43 @@ class BridgeAgent:
             sid,
             make_event(EventType.TOOL_STARTED, sid, 0, tool=tool_name, args=args),
         )
+        run_id = state.get("run_id") or ""
+        tool_started = time.perf_counter()
         try:
             result = await registry.call(tool_name, args)
             await event_bus.publish(
                 sid,
                 make_event(EventType.TOOL_COMPLETED, sid, 0, tool=tool_name, result=result.get("result")),
             )
+            # 持久化工具调用，便于审计与后续分析
+            if run_id:
+                await record_tool_call(
+                    agent_run_id=run_id,
+                    tool=tool_name,
+                    args=args,
+                    result=result.get("result"),
+                    duration_ms=int((time.perf_counter() - tool_started) * 1000),
+                )
             widget = result.get("widget")
             if widget:
-                await event_bus.publish(
+                await _publish_widget(
                     sid,
-                    make_event(
-                        EventType.WIDGET_SHOW,
-                        sid,
-                        0,
-                        widget_id=f"w_{sid}",
-                        widget_type=widget["widget_type"],
-                        payload=widget["payload"],
-                    ),
+                    widget_id=f"w_{sid}",
+                    widget_type=widget["widget_type"],
+                    payload=widget["payload"],
                 )
             return {"tool_result": result.get("result"), "widget": widget}
         except Exception as e:  # noqa: BLE001
             logger.exception("工具调用失败")
+            if run_id:
+                await record_tool_call(
+                    agent_run_id=run_id,
+                    tool=tool_name,
+                    args=args,
+                    error_code="ERR_5004",
+                    error_message=str(e)[:500],
+                    duration_ms=int((time.perf_counter() - tool_started) * 1000),
+                )
             await event_bus.publish(
                 sid,
                 make_event(
@@ -234,14 +294,18 @@ class BridgeAgent:
                 full += chunk
                 await event_bus.publish(
                     sid,
-                    make_event(EventType.MESSAGE_DELTA, sid, 0, text=chunk, role="assistant", run_id=state.get("run_id")),
+                    make_event(
+                        EventType.MESSAGE_DELTA, sid, 0, text=chunk, role="assistant", run_id=state.get("run_id")
+                    ),
                 )
         except Exception as e:  # noqa: BLE001
             logger.exception("LLM 流式回复失败")
             full = "抱歉，回复生成出现异常，请稍后重试或到服务台寻求帮助。"
             await event_bus.publish(
                 sid,
-                make_event(EventType.ERROR, sid, 0, code="ERR_6001", message="回复生成失败", details={"reason": str(e)}),
+                make_event(
+                    EventType.ERROR, sid, 0, code="ERR_6001", message="回复生成失败", details={"reason": str(e)}
+                ),
             )
         return {"reply": full}
 
@@ -265,7 +329,13 @@ class BridgeAgent:
 
     @staticmethod
     def _is_privacy_query(text: str) -> bool:
-        """是否涉及具体患者/他人的隐私查询（病房床位、病情、检查结果等）。"""
+        """是否涉及具体患者/他人的隐私查询（病房床位、病情、检查结果等）。
+
+        注意误判：像「我妈的检查结果在哪拿」这类问「取件地点」的正当问题
+        不应被拦截，因此先排除取件/领取语义。
+        """
+        if any(h in text for h in _PICKUP_HINTS):
+            return False
         if any(h in text for h in _PRIVACY_STRONG):
             return True
         if any(p in text for p in _PRIVACY_PERSON) and any(w in text for w in _PRIVACY_WEAK):
@@ -286,7 +356,8 @@ class BridgeAgent:
 
     def _build_messages(self, state: AgentState) -> list[dict[str, str]]:
         scene = state.get("scene", "hospital")
-        sys = _build_scene_prompt(scene, state.get("rag_context", ""))
+        wheelchair = state.get("wheelchair", False)
+        sys = _build_scene_prompt(scene, state.get("rag_context", ""), wheelchair=wheelchair)
         sys += "\n\n回复须简短、清晰、口语化的中文；只提供流程、地点和公开信息，不提供诊断或处方。"
         messages: list[dict[str, str]] = [{"role": "system", "content": sys}]
         for m in state.get("history", [])[-20:]:
@@ -305,16 +376,25 @@ class BridgeAgent:
             locs = tool_result["locations"]
             if locs:
                 first = locs[0]
-                return f"{first.get('name', '该地点')}在 {first.get('floor', '')} 楼{first.get('area', '')}（{first.get('direction', '')}），详情见画面右下角。"
+                name = first.get("name", "该地点")
+                floor = first.get("floor", "")
+                area = first.get("area", "")
+                direction = first.get("direction", "")
+                return f"{name}在 {floor} 楼{area}（{direction}），详情见画面右下角。"
             return f"未找到相关服务点，请到一楼{guide}咨询。"
         if "result" in tool_result:  # translate
             return f"翻译结果：{tool_result['result']}"
         return "已为您查询到相关信息，详见右侧。"
 
-    async def _stream_text(self, text: str):
-        for ch in text:
-            await asyncio.sleep(0.02)
-            yield ch
+    # 合成文本（工具结果 / 隐私话术）的分块大小。
+    # 旧实现按「每字符 sleep 0.02s」伪造打字机效果：一条 200 字回复要多阻塞 4 秒，
+    # 并产生 200 条 SSE 事件。改为按块推送、不 sleep，节奏交给前端渲染。
+    _SYNTH_CHUNK = 24
+
+    @staticmethod
+    async def _stream_text(text: str):
+        for i in range(0, len(text), BridgeAgent._SYNTH_CHUNK):
+            yield text[i : i + BridgeAgent._SYNTH_CHUNK]
 
     async def _thinking(self, state: AgentState, step: str, detail: str) -> None:
         await event_bus.publish(
@@ -323,9 +403,12 @@ class BridgeAgent:
         )
 
     # ---- 图构建与执行 ----
-    def _build_graph(self):
+    def _build_graph(self) -> Any:
+        """构建（并缓存）LangGraph 图；不可用时返回 None 表示走顺序回退。"""
         if self._graph is not None:
             return self._graph
+        if self._graph_unavailable:
+            return None
         try:
             from langgraph.graph import END, START, StateGraph
 
@@ -356,12 +439,14 @@ class BridgeAgent:
             logger.info("LangGraph Agent 已编译")
         except Exception as e:  # noqa: BLE001
             logger.warning("LangGraph 不可用，回退到顺序执行：{}", e)
-            self._graph = False  # 标记使用回退
+            # 用独立标记代替「把 False 塞进 _graph」的哨兵写法
+            self._graph_unavailable = True
+            self._graph = None
         return self._graph
 
     async def run(self, state: AgentState) -> AgentState:
         graph = self._build_graph()
-        if graph is False:
+        if graph is None:
             # 顺序回退
             state = {**state, **(await self.parse(state))}
             state = {**state, **(await self.route(state))}

@@ -1,7 +1,7 @@
 // Bridge 前端类型定义
 
 /** 沟通模式 */
-export type Mode = 'standard' | 'hearing' | 'elderly'
+export type Mode = 'standard' | 'hearing' | 'elderly' | 'visual'
 
 /** 业务场景 */
 export type Scene = 'hospital' | 'government'

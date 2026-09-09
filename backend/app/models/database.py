@@ -81,17 +81,27 @@ async_session_factory = async_sessionmaker(
 
 
 async def init_db() -> None:
-    """创建数据表。"""
-    # 导入所有模型，确保元数据注册
-    from app.models import db_models  # noqa: F401
+    """初始化数据库。
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # 启用 WAL 模式，解决并发读写导致的 "database is locked"
-        if not _use_postgres and not _is_memory:
+    默认使用 Alembic 迁移（可追溯、可回滚）；若迁移不可用则回退到 create_all，
+    保证首次启动仍能建表。
+    """
+    if settings.auto_migrate:
+        from app.models.migrations import run_migrations
+
+        await run_migrations()
+    else:
+        from app.models import db_models  # noqa: F401
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    # 启用 WAL 模式，解决并发读写导致的 "database is locked"
+    if not _use_postgres and not _is_memory:
+        async with engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
             await conn.execute(text("PRAGMA busy_timeout=5000"))
-    logger.info("数据表已就绪")
+    logger.info("数据表已就绪（auto_migrate={}）", settings.auto_migrate)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

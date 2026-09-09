@@ -1,0 +1,47 @@
+[tool.ruff]
+# 后端 Python 代码规范（CI 门禁）
+target-version = "py311"
+line-length = 120
+src = ["."]
+
+exclude = [
+    ".venv",
+    "chroma_data",
+    "models",
+    "data",
+    "logs",
+    ".piptmp",
+]
+
+[tool.ruff.lint]
+# E/W: pycodestyle  F: pyflakes  I: isort
+# B: flake8-bugbear（真实缺陷）  C4: comprehensions  S: bandit（安全）
+# F 规则能直接拦住 NameError 类缺陷（F821 未定义名）。
+select = ["E", "F", "W", "I", "B", "C4", "S"]
+ignore = [
+    "E501",  # 行长由 line-length 与 formatter 控制，避免逐行改写中文注释
+    "B008",  # FastAPI 的 Depends()/File() 必须写在默认参数里
+    "S104",  # 服务端需要绑定 0.0.0.0
+    "S110",  # 日志脱敏失败必须静默，不能影响业务
+    "S324",  # md5 仅用于缓存 key 与文档 ID，非安全用途
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里允许 assert 与断言式导入
+"tests/*" = ["E402", "S101"]
+
+[tool.mypy]
+python_version = "3.11"
+# 第三方库（chromadb / av / vosk 等）无类型存根，忽略缺失导入
+ignore_missing_imports = true
+files = ["app"]
+# 只在显式 ignore 失效时提示，避免噪音
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

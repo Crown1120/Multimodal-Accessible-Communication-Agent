@@ -22,6 +22,8 @@ backend/models/
 backend/.pytest_cache/
 backend/*.wav
 backend/fix_avatar.js
+# 本地安装依赖时的临时目录（沙箱环境下的 pip/npm 缓存）
+backend/.piptmp/
 
 # 前端
 frontend/node_modules/

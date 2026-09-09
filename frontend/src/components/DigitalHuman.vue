@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 
-import BIcon from '@/components/BIcon.vue'
+import BIcon, { type IconName } from '@/components/BIcon.vue'
 import WidgetPanel from '@/components/WidgetPanel.vue'
+import { api } from '@/services/api'
 import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
@@ -35,13 +36,42 @@ const XINGYUN_SDK_URL = 'https://media.xingyun3d.com/xingyun3d/general/litesdk/x
 const XINGYUN_GATEWAY = 'https://nebula-agent.xingyun3d.com/user/v1/ttsa/session'
 const xingyunAppId = (import.meta.env.VITE_XINGYUN_APP_ID as string | undefined)?.trim()
 const xingyunAppSecret = (import.meta.env.VITE_XINGYUN_APP_SECRET as string | undefined)?.trim()
-const xingyunConfigured = Boolean(xingyunAppId && xingyunAppSecret)
 const xingyunReady = ref(false)
 const xingyunLoading = ref(false)
 const xingyunDownloadProgress = ref<number | null>(null)
 const xingyunError = ref('')
 let xingyunAvatar: XmovAvatarInstance | null = null
-let xingyunWatchdog: ReturnType<typeof window.setTimeout> | null = null
+let xingyunWatchdog: number | null = null
+
+/**
+ * 解析星云凭据。
+ *
+ * 优先使用构建期注入的 VITE_XINGYUN_*；未配置时向后端 `/api/config/public`
+ * 取运行时配置——这样凭据不必被内联进静态产物，运营侧也能不重新构建前端就轮换密钥。
+ *
+ * 注意：星云 SDK 的设计要求 appSecret 出现在浏览器中（见官方快速开始文档），
+ * 因此该密钥对终端用户本质上是公开的，必须使用域名白名单 + 配额限制的专用密钥。
+ */
+let resolvedCredentials: { appId: string; appSecret: string } | null = null
+let credentialsResolved = false
+
+async function resolveCredentials(): Promise<{ appId: string; appSecret: string } | null> {
+  if (credentialsResolved) return resolvedCredentials
+  credentialsResolved = true
+  if (xingyunAppId && xingyunAppSecret) {
+    resolvedCredentials = { appId: xingyunAppId, appSecret: xingyunAppSecret }
+    return resolvedCredentials
+  }
+  try {
+    const cfg = await api.getPublicConfig()
+    if (cfg.xingyun_app_id && cfg.xingyun_app_secret) {
+      resolvedCredentials = { appId: cfg.xingyun_app_id, appSecret: cfg.xingyun_app_secret }
+    }
+  } catch {
+    // 后端不可用或未配置：保持降级数字人
+  }
+  return resolvedCredentials
+}
 
 // 浏览器原生语音合成（SpeechSynthesis），无需 API Key
 function speakWithBrowser(text: string, speed: number) {
@@ -127,7 +157,8 @@ function hasRenderedXingyunCanvas(): boolean {
 }
 
 async function initXingyun() {
-  if (!xingyunConfigured || !xingyunAppId || !xingyunAppSecret) return
+  const credentials = await resolveCredentials()
+  if (!credentials) return
   if (!supportsWebGL2()) {
     xingyunError.value = '当前浏览器不支持 WebGL2，已使用降级数字人'
     return
@@ -141,8 +172,8 @@ async function initXingyun() {
     // 注意：SDK 内部使用 querySelector，containerId 需要 # 前缀
     xingyunAvatar = new window.XmovAvatar({
       containerId: '#xingyun-avatar-container',
-      appId: xingyunAppId,
-      appSecret: xingyunAppSecret,
+      appId: credentials.appId,
+      appSecret: credentials.appSecret,
       gatewayServer: XINGYUN_GATEWAY,
       onMessage: (error) => {
         const code = error.code || ''
@@ -156,14 +187,17 @@ async function initXingyun() {
         console.error('[Xingyun] code=%s message=%s', code, message)
       },
       onStatusChange: (status) => {
-        console.debug('[Xingyun] status=', status)
+        if (import.meta.env.DEV) console.warn('[Xingyun] status=', status)
       },
     })
     // SDK init：不同版本签名不同，先无参 → 再带参，避免 TypeError
+    const avatarWithInit = xingyunAvatar as unknown as {
+      init: (options?: { onDownloadProgress?: (progress: number) => void }) => Promise<void>
+    }
     try {
-      await (xingyunAvatar as any).init()
+      await avatarWithInit.init()
     } catch {
-      await (xingyunAvatar as any).init({
+      await avatarWithInit.init({
         onDownloadProgress: (progress: number) => {
           xingyunDownloadProgress.value = Math.round(progress * 100)
         },
@@ -229,7 +263,7 @@ function ensureXingyunMuted() {
 // 会立即开始显示，音频却要等合成完成才播放 → 字幕与音频明显不同步。
 // 因此：speak 仅记录状态并启动「音频兜底定时器」，audio_ready 就绪后
 // 在同一时刻启动 SDK 播报（字幕+嘴型）与音频播放，保证三者同步。
-let speakFallbackTimer: ReturnType<typeof window.setTimeout> | null = null
+let speakFallbackTimer: number | null = null
 
 function clearSpeakFallback() {
   if (speakFallbackTimer !== null) {
@@ -259,7 +293,12 @@ function startSpeechSync() {
   }
   // 播放后端 TTS 音频
   if (hasAudio) {
-    audioEl.value!.play().catch(() => {})
+    audioEl.value!.play().catch((err) => {
+      // 浏览器自动播放策略会阻止未交互页面播放音频；此时不能静默失败，
+      // 否则用户听不到任何声音却看不出原因。降级到浏览器语音并提示一次。
+      console.warn('[Audio] 播放被阻止，降级为浏览器语音：', err)
+      if (store.speakingText) speakWithBrowser(store.speakingText, speed)
+    })
   } else if (!xingyunReady.value) {
     // 星云不可用时兜底浏览器 TTS
     speakWithBrowser(text, speed)
@@ -269,9 +308,10 @@ function startSpeechSync() {
 // 音频播放结束：停止数字人嘴型动作，确保音画同步
 function onAudioEnded() {
   // 尝试停止星云 SDK 播报（如果 SDK 支持 stop 方法）
-  if (xingyunAvatar && typeof (xingyunAvatar as Record<string, unknown>).stop === 'function') {
+  const stoppable = xingyunAvatar as unknown as { stop?: () => void } | null
+  if (stoppable && typeof stoppable.stop === 'function') {
     try {
-      (xingyunAvatar as Record<string, () => void>).stop()
+      stoppable.stop()
     } catch (e) {
       console.warn('[Xingyun] stop speak failed:', e)
     }
@@ -321,6 +361,16 @@ watch(
   },
 )
 
+// 本地播报请求（store.speak：重复一遍 / 路线语音导航）：无需等 TTS 音频，立即播报
+watch(
+  () => store.speakTick,
+  () => {
+    if (!store.speaking) return
+    clearSpeakFallback()
+    startSpeechSync()
+  },
+)
+
 onMounted(async () => {
   // 等待 DOM 渲染完成，确保 v-if 的容器已挂载到 document
   await nextTick()
@@ -331,6 +381,15 @@ onMounted(async () => {
 
 onUnmounted(() => {
   clearSpeakFallback()
+  // 释放 MutationObserver，避免组件卸载后回调仍持有 DOM 引用
+  xingyunMuteObserver?.disconnect()
+  xingyunMuteObserver = null
+  // 停止并释放音频，避免卸载后继续出声
+  if (audioEl.value) {
+    audioEl.value.pause()
+    audioEl.value.removeAttribute('src')
+    audioEl.value.load()
+  }
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel()
   }
@@ -340,7 +399,7 @@ onUnmounted(() => {
 })
 
 // 顶部状态：说话/思考/加载/待机
-const statusMeta = ref<{ icon: string; label: string }>({ icon: 'cpu', label: '待机' })
+const statusMeta = ref<{ icon: IconName; label: string }>({ icon: 'cpu', label: '待机' })
 watch(
   () => [store.speaking, store.agentStatus, xingyunLoading.value, xingyunReady.value, xingyunError.value] as const,
   ([speaking, agentStatus, loading, ready, error]) => {
@@ -366,7 +425,7 @@ watch(
       :class="{
         ready: xingyunReady && !xingyunError,
         loading: xingyunLoading,
-        hidden: !xingyunConfigured,
+        hidden: !xingyunReady && !xingyunLoading,
         broken: Boolean(xingyunError),
       }"
       aria-label="魔珐星云3D数字人"

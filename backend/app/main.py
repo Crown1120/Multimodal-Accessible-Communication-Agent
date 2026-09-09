@@ -8,12 +8,15 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
 from app.core.errors import BridgeError, ErrorCode
 from app.core.logging import get_logger, setup_logging
+from app.core.middleware import RequestContextMiddleware
 
 logger = get_logger()
 
@@ -30,10 +33,15 @@ async def lifespan(_app: FastAPI):
     await init_db()
     logger.info("数据库初始化完成")
 
+    # 回收上次进程被强杀时遗留的 running 运行
+    from app.agent.runner import recover_stuck_runs
+
+    await recover_stuck_runs()
+
     # 知识库索引 + 热加载监控
+    from app.core.task_manager import background_tasks
     from app.rag.retriever import get_rag
     from app.rag.watcher import KnowledgeWatcher
-    from app.core.task_manager import background_tasks
 
     watcher = KnowledgeWatcher(get_rag())
     await watcher.start()
@@ -42,6 +50,12 @@ async def lifespan(_app: FastAPI):
 
     await watcher.stop()
     await background_tasks.shutdown()
+    # 释放共享 HTTP 连接池与 TTS 音频缓存
+    from app.core.http import close_http_client
+    from app.services.audio_store import audio_store
+
+    await close_http_client()
+    await audio_store.clear()
     logger.info("Bridge 后端关闭")
 
 
@@ -61,7 +75,10 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
     )
+    # 请求上下文（request_id + 访问日志）
+    app.add_middleware(RequestContextMiddleware)
 
     # 统一异常处理
     @app.exception_handler(BridgeError)
@@ -72,6 +89,46 @@ def create_app() -> FastAPI:
                 "code": exc.code.value,
                 "message": exc.message,
                 "details": exc.details,
+            },
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(_req: Request, exc: RequestValidationError):
+        """把 Pydantic 校验错误统一成 Bridge 错误结构。
+
+        默认 FastAPI 返回 `{"detail": [...]}`，前端拿不到 `code`/`message`，
+        只能显示「HTTP 422」，对用户毫无意义。
+        """
+        return JSONResponse(
+            status_code=422,
+            content={
+                "code": ErrorCode.VALIDATION_ERROR.value,
+                "message": "请求参数不合法",
+                "details": {
+                    "errors": [
+                        {"loc": list(e.get("loc", ())), "msg": e.get("msg", "")}
+                        for e in exc.errors()[:5]
+                    ]
+                },
+            },
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_http_exception(_req: Request, exc: StarletteHTTPException):
+        """HTTPException（401/404/413/429 等）也走统一错误结构。"""
+        code_map = {
+            401: ErrorCode.UNAUTHORIZED.value,
+            403: ErrorCode.UNAUTHORIZED.value,
+            404: ErrorCode.NOT_FOUND.value,
+            413: ErrorCode.VALIDATION_ERROR.value,
+            429: ErrorCode.BAD_REQUEST.value,
+        }
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "code": code_map.get(exc.status_code, ErrorCode.BAD_REQUEST.value),
+                "message": str(exc.detail),
+                "details": {},
             },
         )
 

@@ -18,6 +18,7 @@ docker compose up -d --build
 
 Write-Host ""
 Write-Host "Bridge 部署完成" -ForegroundColor Green
-Write-Host "前端: http://localhost:5173" -ForegroundColor Green
+Write-Host "前端: http://localhost:8080" -ForegroundColor Green
 Write-Host "后端: http://localhost:8000/api/health" -ForegroundColor Green
 Write-Host "日志: docker compose logs -f" -ForegroundColor Cyan
+Write-Host "提示: LLM/ASR/TTS 的 API Key 写在仓库根目录 .env（compose 自动注入容器）" -ForegroundColor Cyan

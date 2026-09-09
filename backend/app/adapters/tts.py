@@ -16,10 +16,9 @@ import json
 import uuid
 from typing import Protocol
 
-import httpx
-
 from app.core.config import settings
 from app.core.errors import AdapterError, ErrorCode
+from app.core.http import get_http_client
 from app.core.logging import get_logger
 
 logger = get_logger()
@@ -103,54 +102,54 @@ class VolcEngineTTSAdapter:
             "X-Control-Require-Usage-Tokens-Return": "*",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{self.base_url}/unidirectional",
-                json=payload,
-                headers=headers,
+        client = get_http_client()
+        resp = await client.post(
+            f"{self.base_url}/unidirectional",
+            json=payload,
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            detail = resp.text[:512]
+            try:
+                err = resp.json()
+                msg = err.get("header", {}).get("message") or err.get("message") or ""
+            except Exception:  # noqa: BLE001
+                msg = ""
+            raise AdapterError(
+                ErrorCode.ADAPTER_TTS_FAILED,
+                f"TTS 请求失败：HTTP {resp.status_code}"
+                + (f"（{msg}）" if msg else ""),
+                details={"body": detail},
             )
-            if resp.status_code != 200:
-                detail = resp.text[:512]
-                try:
-                    err = resp.json()
-                    msg = err.get("header", {}).get("message") or err.get("message") or ""
-                except Exception:  # noqa: BLE001
-                    msg = ""
-                raise AdapterError(
-                    ErrorCode.ADAPTER_TTS_FAILED,
-                    f"TTS 请求失败：HTTP {resp.status_code}"
-                    + (f"（{msg}）" if msg else ""),
-                    details={"body": detail},
-                )
-            # 单向流式返回 NDJSON（每行一个 JSON 块），逐行解析并拼接音频
-            audio_chunks: list[str] = []
-            last_code = 0
-            last_msg = ""
-            for line in resp.text.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                code = chunk.get("code", 0)
-                # 0 = 音频/元数据块；20000000 OK = 流式成功结束标记
-                if code not in (0, 20000000):
-                    last_code = code
-                    last_msg = chunk.get("message", "")
-                    break
-                if chunk.get("data"):
-                    audio_chunks.append(chunk["data"])
-            if last_code != 0:
-                raise AdapterError(
-                    ErrorCode.ADAPTER_TTS_FAILED,
-                    f"TTS 合成失败：{last_msg or '未知错误'}（code={last_code}）",
-                )
-            if not audio_chunks:
-                raise AdapterError(ErrorCode.ADAPTER_TTS_FAILED, "TTS 返回音频为空")
-            audio = base64.b64decode("".join(audio_chunks))
-            return TTSResult(audio=audio, mime="audio/mpeg")
+        # 单向流式返回 NDJSON（每行一个 JSON 块），逐行解析并拼接音频
+        audio_chunks: list[str] = []
+        last_code = 0
+        last_msg = ""
+        for line in resp.text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            code = chunk.get("code", 0)
+            # 0 = 音频/元数据块；20000000 OK = 流式成功结束标记
+            if code not in (0, 20000000):
+                last_code = code
+                last_msg = chunk.get("message", "")
+                break
+            if chunk.get("data"):
+                audio_chunks.append(chunk["data"])
+        if last_code != 0:
+            raise AdapterError(
+                ErrorCode.ADAPTER_TTS_FAILED,
+                f"TTS 合成失败：{last_msg or '未知错误'}（code={last_code}）",
+            )
+        if not audio_chunks:
+            raise AdapterError(ErrorCode.ADAPTER_TTS_FAILED, "TTS 返回音频为空")
+        audio = base64.b64decode("".join(audio_chunks))
+        return TTSResult(audio=audio, mime="audio/mpeg")
 
 
 # ---- OpenAI TTS 兼容适配器 ----
@@ -180,19 +179,19 @@ class OpenAITTSAdapter:
             "response_format": "mp3",
             "speed": speed,
         }
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{self.base_url}/audio/speech",
-                json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}"},
+        client = get_http_client()
+        resp = await client.post(
+            f"{self.base_url}/audio/speech",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+        )
+        if resp.status_code != 200:
+            raise AdapterError(
+                ErrorCode.ADAPTER_TTS_FAILED,
+                f"TTS 请求失败：HTTP {resp.status_code}",
+                details={"body": resp.text[:512]},
             )
-            if resp.status_code != 200:
-                raise AdapterError(
-                    ErrorCode.ADAPTER_TTS_FAILED,
-                    f"TTS 请求失败：HTTP {resp.status_code}",
-                    details={"body": resp.text[:512]},
-                )
-            return TTSResult(audio=resp.content, mime="audio/mpeg")
+        return TTSResult(audio=resp.content, mime="audio/mpeg")
 
 
 def get_tts_adapter() -> TTSAdapter:

@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import re
+import time
 from collections.abc import AsyncIterator
 from typing import Protocol
 
@@ -111,8 +112,29 @@ class MockLLMAdapter:
 
 # ---- OpenAI 兼容适配器 ----
 # LLM 回复缓存：相同用户问题不重复调用 LLM（医院导诊高频问题命中率高）
-_llm_cache: dict[str, str] = {}
+# value 为 (写入时间戳, 回复)，配合 TTL 避免知识库更新后长期返回旧答案
+_llm_cache: dict[str, tuple[float, str]] = {}
 _LLM_CACHE_MAX = 100
+
+
+def clear_llm_cache() -> int:
+    """清空 LLM 回复缓存（知识库重建/更新后调用），返回清除条数。"""
+    cleared = len(_llm_cache)
+    _llm_cache.clear()
+    return cleared
+
+
+def _cache_get(key: str) -> str | None:
+    """命中且未过 TTL 才返回；过期条目顺手删除。TTL<=0 表示永不过期。"""
+    item = _llm_cache.get(key)
+    if item is None:
+        return None
+    created_at, reply = item
+    ttl = settings.llm_cache_ttl_seconds
+    if ttl > 0 and time.time() - created_at > ttl:
+        _llm_cache.pop(key, None)
+        return None
+    return reply
 
 
 class OpenAILLMAdapter:
@@ -142,7 +164,7 @@ class OpenAILLMAdapter:
         if len(_llm_cache) >= _LLM_CACHE_MAX:
             for k in list(_llm_cache.keys())[: _LLM_CACHE_MAX // 2]:
                 del _llm_cache[k]
-        _llm_cache[key] = reply
+        _llm_cache[key] = (time.time(), reply)
 
     def _build_payload(self, messages: list[dict[str, str]], *, stream: bool) -> dict:
         payload: dict = {"model": self.model, "messages": messages, "stream": stream}
@@ -155,8 +177,9 @@ class OpenAILLMAdapter:
 
     async def reply(self, messages: list[dict[str, str]]) -> str:
         cache_key = self._cache_key(self.model, messages)
-        if cache_key in _llm_cache:
-            return _llm_cache[cache_key]
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
         data = await self._post(self._build_payload(messages, stream=False))
         reply = data["choices"][0]["message"]["content"]
         self._cache_put(cache_key, reply)
@@ -165,7 +188,7 @@ class OpenAILLMAdapter:
     async def stream_reply(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         # 命中缓存时直接分块返回，避免重复调用 LLM（医院导诊高频问题命中率高）
         cache_key = self._cache_key(self.model, messages)
-        cached = _llm_cache.get(cache_key)
+        cached = _cache_get(cache_key)
         if cached is not None:
             for i in range(0, len(cached), 24):
                 yield cached[i : i + 24]

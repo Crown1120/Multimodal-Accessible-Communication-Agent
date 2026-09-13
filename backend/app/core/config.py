@@ -26,7 +26,10 @@ class Settings(BaseSettings):
     app_name: str = "Bridge"
     app_version: str = "0.1.0"
     environment: str = Field(default="development", description="运行环境：development/staging/production")
-    debug: bool = Field(default=True, description="调试模式")
+    debug: bool = Field(
+        default=False,
+        description="调试模式：暴露异常细节、开启 loguru 诊断；默认关闭，本地开发在 .env 设 DEBUG=true",
+    )
     api_prefix: str = "/api"
 
     # 服务
@@ -61,6 +64,10 @@ class Settings(BaseSettings):
     llm_max_tokens: int = Field(default=512, description="单次回复最大 token 数，0 表示不限制")
     llm_temperature: float | None = Field(default=0.3, description="采样温度，None 表示不传该参数")
     llm_max_retries: int = Field(default=2, description="LLM 请求失败后的重试次数（5xx/429/网络错误）")
+    llm_cache_ttl_seconds: int = Field(
+        default=1800,
+        description="LLM 回复缓存存活秒数，0 表示不过期；知识库重建会主动清空缓存",
+    )
     # 规则分类落到兜底（knowledge）时，再用 LLM 判一次意图
     llm_intent_enabled: bool = Field(default=True, description="启用 LLM 意图分类（规则兜底）")
     llm_intent_timeout_seconds: float = Field(default=6.0, description="LLM 意图分类超时秒数")
@@ -107,6 +114,14 @@ class Settings(BaseSettings):
     )
     rate_limit_per_minute: int = Field(
         default=60, description="单个客户端每分钟允许的消息/音频请求数，0 表示不限流"
+    )
+    sse_max_connections_per_ip: int = Field(
+        default=5,
+        description="单个客户端 IP 允许同时持有的 SSE 连接数，0 表示不限制；防止连接耗尽内存",
+    )
+    sse_heartbeat_seconds: float = Field(
+        default=15.0,
+        description="SSE 无事件时发送心跳的间隔秒数",
     )
     # 日志
     log_level: str = "INFO"

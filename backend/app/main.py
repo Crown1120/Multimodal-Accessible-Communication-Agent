@@ -53,6 +53,16 @@ async def lifespan(_app: FastAPI):
     setup_logging()
     logger.info("Bridge 后端启动中，环境={}，版本={}", settings.environment, settings.app_version)
 
+    # 安全提醒：debug 会向客户端暴露异常细节并开启 loguru 变量诊断，
+    # 绑定全网卡或生产环境开启时必须显式告警
+    if settings.debug:
+        if settings.host == "0.0.0.0":
+            logger.warning(
+                "⚠ DEBUG=true 且 HOST=0.0.0.0：异常细节与局部变量将对外暴露，仅限本地开发使用！"
+            )
+        elif settings.environment == "production":
+            logger.warning("⚠ 生产环境（ENVIRONMENT=production）开启了 DEBUG=true，请确认是否有意为之")
+
     # 数据库初始化（延迟导入避免循环依赖）
     from app.models.database import init_db
 

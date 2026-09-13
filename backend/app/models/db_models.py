@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.database import Base
@@ -48,6 +48,8 @@ class Session(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    # 历史消息恒按「会话过滤 + 时间排序」读取，复合索引避免大表 filesort
+    __table_args__ = (Index("ix_messages_session_created", "session_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
@@ -63,6 +65,8 @@ class Message(Base):
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"
+    # 卡死运行回收按「状态 + 创建时间」扫描，复合索引避免全表扫
+    __table_args__ = (Index("ix_agent_runs_status_created", "status", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)

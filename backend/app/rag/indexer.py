@@ -10,6 +10,7 @@ import hashlib
 import re
 from pathlib import Path
 
+from app.adapters.llm import clear_llm_cache
 from app.core.logging import get_logger
 from app.rag.store import Document, VectorStore
 
@@ -91,6 +92,10 @@ async def index_knowledge(store: VectorStore, knowledge_dir: Path | None = None)
             )
 
     await store.add(docs)
+    # 知识库内容可能已变更：清空 LLM 回复缓存，避免继续返回基于旧知识的答案
+    cleared = clear_llm_cache()
+    if cleared:
+        logger.info("知识库重建，已清空 {} 条 LLM 回复缓存", cleared)
     logger.info("知识库索引完成：{} 个文档块", len(docs))
     return len(docs)
 

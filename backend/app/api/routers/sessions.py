@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,6 +52,30 @@ from app.services.event_bus import event_bus
 logger = get_logger()
 router = APIRouter()
 _session_locks: dict[str, asyncio.Lock] = {}
+# 单 IP 在线 SSE 连接计数：每条连接占一个 1024 事件队列，必须限制总量防内存耗尽
+_sse_conn_counts: dict[str, int] = {}
+
+
+def _acquire_sse_slot(client_ip: str) -> None:
+    """占用一个 SSE 连接名额；超过单 IP 上限直接抛 429。"""
+    max_sse = settings.sse_max_connections_per_ip
+    current = _sse_conn_counts.get(client_ip, 0)
+    if max_sse > 0 and current >= max_sse:
+        logger.warning("SSE 并发连接超限 ip={} count={} limit={}", client_ip, current, max_sse)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="SSE 连接数过多，请稍后重连",
+        )
+    _sse_conn_counts[client_ip] = current + 1
+
+
+def _release_sse_slot(client_ip: str) -> None:
+    """释放一个 SSE 连接名额（客户端断连/溢出/异常都必须走到）。"""
+    remaining = _sse_conn_counts.get(client_ip, 1) - 1
+    if remaining > 0:
+        _sse_conn_counts[client_ip] = remaining
+    else:
+        _sse_conn_counts.pop(client_ip, None)
 
 
 def _get_session_lock(session_id: str) -> asyncio.Lock:
@@ -409,7 +433,10 @@ async def close_session(
     return SessionOut.from_orm(session)
 
 
-@router.get("/{session_id}/events")
+@router.get(
+    "/{session_id}/events",
+    dependencies=[Depends(rate_limit("sse"))],
+)
 async def stream_events(
     session_id: str,
     request: Request,
@@ -424,6 +451,10 @@ async def stream_events(
     async with async_session_factory() as check_db:
         await SessionRepository(check_db).get(session_id)
 
+    # 单 IP 并发连接上限：超限直接 429，不创建订阅队列
+    client_ip = request.client.host if request.client else "unknown"
+    _acquire_sse_slot(client_ip)
+
     last_seq = 0
     if last_event_id is not None:
         last_seq = max(0, last_event_id)
@@ -435,7 +466,12 @@ async def stream_events(
             except ValueError:
                 last_seq = 0
 
-    sub = await event_bus.subscribe(session_id, last_seq)
+    try:
+        sub = await event_bus.subscribe(session_id, last_seq)
+    except Exception:
+        # 订阅失败不能泄漏连接计数
+        _release_sse_slot(client_ip)
+        raise
 
     async def event_stream():
         try:
@@ -448,7 +484,9 @@ async def stream_events(
                     logger.warning("SSE 订阅溢出，主动断开以便重连补齐 session={}", session_id)
                     break
                 try:
-                    event = await asyncio.wait_for(sub.queue.get(), timeout=15)
+                    event = await asyncio.wait_for(
+                        sub.queue.get(), timeout=settings.sse_heartbeat_seconds
+                    )
                 except asyncio.TimeoutError:
                     # 心跳保持连接
                     yield ": ping\n\n"
@@ -456,6 +494,7 @@ async def stream_events(
                 yield to_sse(event)
         finally:
             event_bus.unsubscribe(session_id, sub)
+            _release_sse_slot(client_ip)
 
     return StreamingResponse(
         event_stream(),

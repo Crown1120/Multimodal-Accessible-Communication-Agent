@@ -7,6 +7,15 @@ import { api } from '@/services/api'
 import { subscribeEvents, type EventHandler } from '@/services/eventStream'
 import type { AgentStatus, BridgeEvent, Message, Mode, Scene, WidgetData } from '@/types'
 
+// crypto.randomUUID 仅在安全上下文（HTTPS / localhost）可用；
+// 医院大厅 kiosk 常通过 http://192.168.x.x 访问，需要降级方案
+function genId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export const useSessionStore = defineStore('session', () => {
   // 状态
   const sessionId = ref<string | null>(null)
@@ -33,9 +42,9 @@ export const useSessionStore = defineStore('session', () => {
   const recording = ref<boolean>(false) // 是否正在录音
   const sending = ref<boolean>(false) // 是否正在发送消息
   const flash = ref<boolean>(false) // 听障模式闪光通知
-const wheelchairMode = ref<boolean>(false) // 轮椅模式（无障碍路线）
-const emotion = ref<string>('neutral') // 当前对话情绪（neutral/anxious/painful/calm/happy）
-const emotionConfidence = ref<number>(0) // 情绪识别置信度
+  const wheelchairMode = ref<boolean>(false) // 轮椅模式（无障碍路线）
+  const emotion = ref<string>('neutral') // 当前对话情绪（neutral/anxious/painful/calm/happy）
+  const emotionConfidence = ref<number>(0) // 情绪识别置信度
   const lastError = ref<string>('') // 最近错误提示
   const asrAdapter = ref<string>('') // 当前实际使用的ASR适配器（豆包大模型/Whisper离线/Vosk离线/演示模式）
   // 后端公开配置（输入长度上限等），由 loadPublicConfig 拉取
@@ -52,6 +61,13 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
   let flashTimer: ReturnType<typeof setTimeout> | null = null
   let agentIdleTimer: ReturnType<typeof setTimeout> | null = null
   let errorTimer: ReturnType<typeof setTimeout> | null = null
+  // 播报最长时长兜底：speak 后 60s 内未收到任何结束信号则强制复位，
+  // 防止音频异常（加载失败/播放被阻止/事件丢失）导致数字人永久卡在「正在播报」
+  let speakTimer: ReturnType<typeof setTimeout> | null = null
+  // 主动打断播报的信号：发送新消息（interruptSpeaking）时自增，
+  // DigitalHuman 监听此值并强制停止星云 SDK 正在进行的播报（TTSA 会话），
+  // 否则新旧 speak 在 SDK 内冲突，连续对话时数字人嘴型/字幕会卡住
+  const sdkInterruptTick = ref(0)
 
   function clearTimers() {
     if (flashTimer !== null) {
@@ -115,11 +131,12 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
   }
 
   // 订阅流式事件
-  function subscribe() {
+  // initialLastEventId: 恢复会话时传入最大值，避免重放历史事件导致自动播放
+  function subscribe(initialLastEventId = 0) {
     if (!sessionId.value) return
     unsubscribe?.()
     const handler: EventHandler = (event: BridgeEvent) => handleEvent(event)
-    unsubscribe = subscribeEvents(sessionId.value, handler)
+    unsubscribe = subscribeEvents(sessionId.value, handler, initialLastEventId)
   }
 
   function handleEvent(event: BridgeEvent) {
@@ -133,7 +150,7 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
         transcript.value = ''
         transcriptSpeaker.value = ''
         // 优先使用服务端持久化消息的 ID，保证与历史记录一致（避免刷新后出现重复消息）
-        const serverId = (d.message_id as string) || crypto.randomUUID()
+        const serverId = (d.message_id as string) || genId()
         if (messages.value.some((m) => m.id === serverId)) break
         messages.value.push({
           id: serverId,
@@ -172,7 +189,7 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
           : undefined
         if (!deltaMessage) {
           messages.value.push({
-            id: crypto.randomUUID(),
+            id: genId(),
             session_id: event.session_id,
             role: 'assistant',
             content: '',
@@ -205,7 +222,7 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
           messages.value[idx].send_status = 'sent'
         } else {
           messages.value.push({
-            id: (d.message_id as string) ?? crypto.randomUUID(),
+            id: (d.message_id as string) ?? genId(),
             session_id: event.session_id,
             role: d.role as Message['role'],
             content,
@@ -226,6 +243,11 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
       case 'digital_human.speak':
         speaking.value = true
         flashNotification()
+        // 播报最长时长兜底：60s 后强制复位，避免音频异常导致永久「正在播报」
+        if (speakTimer !== null) clearTimeout(speakTimer)
+        speakTimer = setTimeout(() => {
+          stopSpeaking()
+        }, 60000)
         speakingText.value = (d.text as string) ?? ''
         transcript.value = (d.text as string) ?? ''
         transcriptSpeaker.value = 'assistant'
@@ -237,6 +259,8 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
         needRepeat.value = (d.repeat as boolean) ?? false
         speakingGesture.value = (d.gesture as string) ?? 'idle'
         speakingExpression.value = (d.expression as string) ?? 'neutral'
+        // 接通情感识别闭环：后端按内容推断的情绪写入状态，供数字人/UI 使用
+        setEmotion((d.emotion as string) ?? 'neutral')
         break
       case 'digital_human.audio_ready':
         // 异步 TTS 音频就绪：仅接受当前播报 run_id 的音频，
@@ -285,7 +309,13 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
   async function sendMessage(content: string) {
     if (!sessionId.value || sending.value) return
     sending.value = true
-    const localId = crypto.randomUUID()
+    // 新一轮对话开始：清空上一轮的服务信息（widget），只展示本轮结果
+    widgets.value = []
+    // 主动打断当前播报：复位播报状态 + 通知数字人停止 SDK 正在进行的 TTSA 会话。
+    // 保证新一轮 speak 到来时触发 false→true 边沿，且 SDK 不被旧播报占用
+    // （否则连续对话时新旧 speak 在 SDK 内冲突，数字人嘴型/字幕卡住）
+    interruptSpeaking()
+    const localId = genId()
     messages.value.push({
       id: localId,
       session_id: sessionId.value,
@@ -294,7 +324,11 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
       send_status: 'pending',
     })
     try {
-      const res = await api.sendMessage(sessionId.value, { role: 'user', content })
+      const res = await api.sendMessage(sessionId.value, {
+        role: 'user',
+        content,
+        wheelchair: wheelchairMode.value,
+      })
       const localMessage = messages.value.find((m) => m.id === localId)
       if (localMessage) {
         // 回写服务端 message_id，使后续事件/历史记录按同一 ID 关联；
@@ -322,9 +356,6 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
     if (flashTimer !== null) clearTimeout(flashTimer)
     flashTimer = setTimeout(() => {
       flash.value = false
-  wheelchairMode.value = false
-  emotion.value = 'neutral'
-  emotionConfidence.value = 0
       flashTimer = null
     }, 30000)
   }
@@ -335,9 +366,42 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
       flashTimer = null
     }
     flash.value = false
-  wheelchairMode.value = false
-  emotion.value = 'neutral'
-  emotionConfidence.value = 0
+  }
+
+  /**
+   * 停止当前播报并复位所有播报状态。
+   *
+   * 由数字人音频播放结束 / 浏览器 TTS 播报结束 / 手动停止时调用。
+   * 后端 message.completed 事件先于 digital_human.speak 到达，之后没有任何事件
+   * 复位播报状态，若不在此复位，speaking 将永久为 true（界面一直显示「正在播报」，
+   * 数字人看似卡住）。所有复位逻辑集中于此，避免各调用方遗漏字段。
+   */
+  function stopSpeaking() {
+    if (speakTimer !== null) {
+      clearTimeout(speakTimer)
+      speakTimer = null
+    }
+    speaking.value = false
+    speakingText.value = ''
+    speakingAudioUrl.value = null
+    speakingRunId.value = null
+    needRepeat.value = false
+    transcript.value = ''
+    transcriptSpeaker.value = ''
+    stopFlash()
+  }
+
+  /**
+   * 主动打断当前播报（发送新消息时调用）。
+   *
+   * 与 stopSpeaking 的区别：stopSpeaking 只复位状态（音频自然结束时用，
+   * 让 SDK 播报自然结束）；interruptSpeaking 额外递增 sdkInterruptTick，
+   * 通知 DigitalHuman 强制停止 SDK 正在进行的 TTSA 会话，
+   * 避免新旧播报在 SDK 内叠加/冲突导致数字人卡住。
+   */
+  function interruptSpeaking() {
+    stopSpeaking()
+    sdkInterruptTick.value++
   }
 
   /**
@@ -393,13 +457,6 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
   function setMode(m: Mode) {
     mode.value = m
     document.documentElement.setAttribute('data-mode', m)
-    // 强制重排：解决 CSS 变量变化时已存在元素样式不重新计算的浏览器优化问题
-    // 需等待 CSS 变量更新后（约 50ms）再触发重排
-    setTimeout(() => {
-      document.body.style.display = 'none'
-      void document.body.offsetHeight
-      document.body.style.display = ''
-    }, 50)
     // 模式联动默认值
     if (m === 'hearing') {
       fontSize.value = 'large'
@@ -426,6 +483,18 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
         })
         .catch(() => {})
     }
+  }
+
+  function setWheelchairMode(enabled: boolean) {
+    wheelchairMode.value = enabled
+    if (sessionId.value) {
+      api.savePreferences(sessionId.value, { wheelchair_mode: enabled }).catch(() => {})
+    }
+  }
+
+  function setEmotion(emotionType: string, confidence: number = 0) {
+    emotion.value = emotionType
+    emotionConfidence.value = confidence
   }
 
   // 应用无障碍属性到 <html>，供 CSS 联动
@@ -486,6 +555,8 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
         if (pref.font_size) fontSize.value = pref.font_size as 'small' | 'medium' | 'large'
         if (pref.speech_rate) speechRate.value = pref.speech_rate as 'normal' | 'slow'
         if (pref.high_contrast !== undefined) highContrast.value = pref.high_contrast as boolean
+        if (pref.wheelchair_mode !== undefined)
+          wheelchairMode.value = pref.wheelchair_mode as boolean
         applyAccessibilityAttrs()
       }
     } catch {
@@ -518,6 +589,16 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
       mode.value = (session.mode as Mode) || mode.value
       scene.value = (session.scene as Scene) || scene.value
       status.value = 'connected'
+      // 清空播放状态和 widget，避免恢复会话后自动播放之前的音频或重复显示 widget
+      speaking.value = false
+      speakingText.value = ''
+      speakingAudioUrl.value = null
+      speakingRunId.value = null
+      speakingGesture.value = 'idle'
+      speakingExpression.value = 'neutral'
+      widgets.value = []
+      agentStatus.value = 'idle'
+      agentDetail.value = ''
       // 同步无障碍属性，保证恢复后样式与模式一致
       document.documentElement.setAttribute('data-mode', mode.value)
       applyAccessibilityAttrs()
@@ -537,7 +618,7 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
       } catch {
         /* 历史加载失败不阻断 */
       }
-      subscribe()
+      subscribe(Number.MAX_SAFE_INTEGER)
       await loadPreferences()
       await loadPublicConfig()
       return true
@@ -610,6 +691,7 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
     speaking,
     speakingText,
     speakingAudioUrl,
+    speakingRunId,
     speakingSpeed,
     needRepeat,
     speakingGesture,
@@ -629,6 +711,9 @@ const emotionConfidence = ref<number>(0) // 情绪识别置信度
     flash,
     flashNotification,
     stopFlash,
+    stopSpeaking,
+    interruptSpeaking,
+    sdkInterruptTick,
     wheelchairMode,
     setWheelchairMode,
     emotion,

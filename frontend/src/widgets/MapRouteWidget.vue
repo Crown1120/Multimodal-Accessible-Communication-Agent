@@ -11,6 +11,12 @@ const navigating = ref(false)
 const currentStep = ref(-1)
 let navTimer: ReturnType<typeof setTimeout> | null = null
 
+// SVG defs 的 id 在文档级全局，同页多个路线 widget 会互相覆盖，
+// 每个实例生成唯一前缀（渐变/箭头引用随之动态绑定）
+const uid = `mrw${Math.random().toString(36).slice(2, 8)}`
+const gradId = `${uid}-grad`
+const markerId = `${uid}-arrow`
+
 const props = defineProps<{
   payload: Record<string, unknown>
 }>()
@@ -125,12 +131,31 @@ const poiPts = computed(() => {
     })
 })
 
+interface AccessibilityPOI {
+  name: string
+  coord: [number, number]
+  floor: number
+  type: string
+  accessibility?: boolean
+}
+
+// 无障碍设施节点（轮椅模式）：在脚本里完成坐标映射，模板不再直接调用可空的 mapFn
 const steps = computed<string[]>(() => (props.payload.steps as string[]) ?? [])
 const floor = computed<number | undefined>(() => props.payload.floor as number | undefined)
 const wheelchair = computed<boolean>(() => (props.payload.wheelchair as boolean) ?? false)
-const currentFloor = ref<number>(1) // 当前显示楼层（3D地图楼层切换）
-const show3D = ref<boolean>(false) // 是否启用3D透视效果
-const accessibilityFacilities = computed(() => (props.payload.accessibility_facilities as Array<Record<string, unknown>>) ?? [])
+const accessibilityFacilities = computed<AccessibilityPOI[]>(
+  () => (props.payload.accessibility_facilities as AccessibilityPOI[]) ?? [],
+)
+
+// 无障碍设施节点（轮椅模式）：在脚本里完成坐标映射，模板不再直接调用可空的 mapFn
+const accessibilityPts = computed(() => {
+  const m = mapFn.value
+  if (!m) return []
+  return accessibilityFacilities.value.map((fac) => ({
+    ...fac,
+    pt: m(fac.coord[0], fac.coord[1]),
+  }))
+})
 
 // 语音导航：逐步播报路线步骤
 function startNavigation() {
@@ -176,6 +201,9 @@ onUnmounted(() => {
         <BIcon name="map" :size="15" />
       </span>
       <span class="head-title">路线规划</span>
+      <span v-if="wheelchair" class="head-sub wheelchair-tag" title="轮椅无障碍路线"
+        >♿ 无障碍</span
+      >
       <span v-if="floor" class="head-sub">{{ floor }} 楼</span>
       <button
         v-if="steps.length > 0"
@@ -209,12 +237,12 @@ onUnmounted(() => {
         aria-label="室内平面路线示意图"
       >
         <defs>
-          <linearGradient id="floorGrad" x1="0" y1="0" x2="0" y2="1">
+          <linearGradient :id="gradId" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0" stop-color="#eef5ff" />
             <stop offset="1" stop-color="#dfeafa" />
           </linearGradient>
           <marker
-            id="routeArrow"
+            :id="markerId"
             markerWidth="9"
             markerHeight="9"
             refX="7.5"
@@ -227,7 +255,15 @@ onUnmounted(() => {
         </defs>
 
         <!-- 楼层地面 -->
-        <rect x="0" y="0" :width="VB_W" :height="VB_H" class="floor-bg" rx="12" />
+        <rect
+          x="0"
+          y="0"
+          :width="VB_W"
+          :height="VB_H"
+          class="floor-bg"
+          :fill="`url(#${gradId})`"
+          rx="12"
+        />
         <!-- 网格 -->
         <g class="grid">
           <line
@@ -270,14 +306,14 @@ onUnmounted(() => {
         </g>
 
         <!-- 无障碍设施标注（轮椅模式） -->
-        <g v-for="(fac, i) in accessibilityFacilities" :key="'acc' + i" class="accessibility-facility">
-          <circle :cx="mapFn(fac.coord[0], fac.coord[1]).x" :cy="mapFn(fac.coord[0], fac.coord[1]).y" r="7" class="acc-dot" />
-          <text :x="mapFn(fac.coord[0], fac.coord[1]).x" :y="mapFn(fac.coord[0], fac.coord[1]).y + 2.5" class="acc-text">♿</text>
+        <g v-for="(fac, i) in accessibilityPts" :key="'acc' + i" class="accessibility-facility">
+          <circle :cx="fac.pt.x" :cy="fac.pt.y" r="7" class="acc-dot" />
+          <text :x="fac.pt.x" :y="fac.pt.y + 2.5" class="acc-text">♿</text>
         </g>
 
         <!-- 路线：光晕 + 主线（虚线流动）+ 终点箭头 -->
         <path v-if="pathD" :d="pathD" class="route-glow" />
-        <path v-if="pathD" :d="pathD" class="route-line" marker-end="url(#routeArrow)" />
+        <path v-if="pathD" :d="pathD" class="route-line" :marker-end="`url(#${markerId})`" />
 
         <!-- 起点 -->
         <g v-if="originPt" class="marker from-marker">
@@ -365,6 +401,13 @@ onUnmounted(() => {
   padding: 2px 9px;
   border-radius: var(--radius-pill);
 }
+.head-sub + .head-sub {
+  margin-left: 6px;
+}
+.wheelchair-tag {
+  color: var(--color-success);
+  border-color: var(--color-success);
+}
 
 .endpoints {
   display: flex;
@@ -426,9 +469,6 @@ onUnmounted(() => {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.8),
     0 3px 10px rgba(37, 99, 235, 0.08);
-}
-.floor-bg {
-  fill: url(#floorGrad);
 }
 .grid line {
   stroke: rgba(37, 99, 235, 0.07);
@@ -641,8 +681,13 @@ onUnmounted(() => {
   animation: navPulse 1.2s ease-in-out infinite;
 }
 @keyframes navPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 
 /* 当前步骤高亮 */
@@ -662,7 +707,14 @@ onUnmounted(() => {
   animation: speakingPulse 0.8s ease-in-out infinite;
 }
 @keyframes speakingPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.6; transform: scale(1.15); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.15);
+  }
 }
 </style>

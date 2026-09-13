@@ -51,7 +51,6 @@ async function request<T>(
   }
 }
 
-
 export interface AudioTranscribeResult {
   session_id: string
   text: string
@@ -117,15 +116,6 @@ export const api = {
     })
   },
 
-  analyzeImage: (sessionId: string, imageFile: File) => {
-    const form = new FormData()
-    form.append('image', imageFile, 'report.jpg')
-    return request<{ analysis: string; summary: string }>(`/sessions/${sessionId}/analyze-image`, {
-      method: 'POST',
-      body: form,
-    })
-  },
-
   getMessages: (sessionId: string) => request<Message[]>(`/sessions/${sessionId}/messages`),
 
   getPreferences: (sessionId: string) =>
@@ -139,6 +129,7 @@ export const api = {
       speech_rate?: string
       language?: string
       high_contrast?: boolean
+      wheelchair_mode?: boolean
       frequent_places?: Record<string, unknown>
     },
   ) =>

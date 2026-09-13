@@ -33,7 +33,9 @@ describe('api.request', () => {
   })
 
   it('调用方自定义 header 不会丢失 Content-Type', async () => {
-    const fetchMock = mockFetch(() => jsonResponse({ session_id: 'sess_1', scene: 'hospital', mode: 'standard', status: 'active' }))
+    const fetchMock = mockFetch(() =>
+      jsonResponse({ session_id: 'sess_1', scene: 'hospital', mode: 'standard', status: 'active' }),
+    )
     await api.getSession('sess_1')
     const init = fetchMock.mock.calls[0][1]
     // getSession 未传自定义 header，验证合并逻辑不破坏默认值
@@ -59,5 +61,19 @@ describe('api.request', () => {
     const res = await api.sendMessage('sess_1', { role: 'user', content: '你好' })
     expect(res.run_id).toBe('run_1')
     expect(res.message_id).toBe('msg_1')
+  })
+
+  it('sendMessage 透传 wheelchair 开关', async () => {
+    const fetchMock = mockFetch(() => jsonResponse({ run_id: 'run_1', message_id: 'msg_1' }))
+    await api.sendMessage('sess_1', { role: 'user', content: '骨科怎么走', wheelchair: true })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(body.wheelchair).toBe(true)
+  })
+
+  it('savePreferences 支持 wheelchair_mode 字段', async () => {
+    const fetchMock = mockFetch(() => jsonResponse({ ok: true }))
+    await api.savePreferences('sess_1', { wheelchair_mode: true })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(body.wheelchair_mode).toBe(true)
   })
 })

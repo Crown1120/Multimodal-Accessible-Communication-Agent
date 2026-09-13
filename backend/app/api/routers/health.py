@@ -59,17 +59,22 @@ def _check_adapters() -> list[AdapterStatus]:
         available=True,
         mode="real" if settings.llm_api_key else "mock",
     ))
-    # ASR（火山豆包 ASR 或 OpenAI Whisper，任一配置即真实识别）
+    # ASR：配置云端 Key 但处于冷却降级期时，如实标注为降级，而不是谎报 real
+    from app.adapters.asr import _volc_in_cooldown  # noqa: PLC0415
+
+    asr_configured = bool(settings.volc_asr_app_key or settings.asr_api_key)
+    asr_degraded = bool(settings.volc_asr_app_key and _volc_in_cooldown())
     result.append(AdapterStatus(
         name="asr",
         available=True,
-        mode="real" if (settings.volc_asr_app_key or settings.asr_api_key) else "mock",
+        mode="degraded" if asr_degraded else ("real" if asr_configured else "mock"),
     ))
-    # TTS
+    # TTS：TTS 未单独配 Key 时会复用火山 ASR 的共享 Key（与 get_tts_adapter 逻辑一致）
+    tts_configured = bool(settings.tts_api_key or settings.volc_asr_app_key)
     result.append(AdapterStatus(
         name="tts",
         available=True,
-        mode="real" if settings.tts_api_key else "mock",
+        mode="real" if tts_configured else "mock",
     ))
     # RAG
     try:

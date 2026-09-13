@@ -28,7 +28,8 @@ class TestSessionLifecycle:
     @pytest.mark.asyncio
     async def test_get_nonexistent_session(self, client):
         resp = await client.get("/api/sessions/nonexistent")
-        assert resp.status_code == 400
+        # 会话不存在语义上是 404（错误码保持 ERR_2001）
+        assert resp.status_code == 404
         assert resp.json()["code"] == "ERR_2001"
 
     @pytest.mark.asyncio
@@ -146,6 +147,47 @@ class TestPreferences:
         assert data["font_size"] == "large"
         assert data["speech_rate"] == "slow"
         assert data["high_contrast"] is True
+
+    @pytest.mark.asyncio
+    async def test_visual_mode_session_accepted(self, client):
+        """视障模式是合法枚举：此前后端 Literal 缺 visual，前端一选就 422。"""
+        resp = await client.post("/api/sessions", json={"scene": "hospital", "mode": "visual"})
+        assert resp.status_code == 201
+        assert resp.json()["mode"] == "visual"
+
+    @pytest.mark.asyncio
+    async def test_wheelchair_preference_persists(self, client):
+        """轮椅模式偏好可保存、可回读。"""
+        create = await client.post("/api/sessions", json={})
+        sid = create.json()["session_id"]
+        resp = await client.put(
+            f"/api/sessions/{sid}/preferences",
+            json={"wheelchair_mode": True},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["wheelchair_mode"] is True
+
+        again = await client.get(f"/api/sessions/{sid}/preferences")
+        assert again.json()["wheelchair_mode"] is True
+
+    @pytest.mark.asyncio
+    async def test_partial_preference_update_keeps_other_fields(self, client):
+        """只开关轮椅模式时，字号/语速等既有偏好不得被重置为默认值。"""
+        create = await client.post("/api/sessions", json={})
+        sid = create.json()["session_id"]
+        first = await client.put(
+            f"/api/sessions/{sid}/preferences",
+            json={"font_size": "large", "speech_rate": "slow"},
+        )
+        assert first.json()["font_size"] == "large"
+        second = await client.put(
+            f"/api/sessions/{sid}/preferences",
+            json={"wheelchair_mode": True},
+        )
+        body = second.json()
+        assert body["wheelchair_mode"] is True
+        assert body["font_size"] == "large"
+        assert body["speech_rate"] == "slow"
 
     @pytest.mark.asyncio
     async def test_clear_preferences(self, client):

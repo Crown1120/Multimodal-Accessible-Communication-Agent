@@ -229,7 +229,6 @@ class VoskASRAdapter:
         # Vosk 不支持真正的流式，先整体识别再按词输出
         result = await self.transcribe(audio, language=language)
         for token in re.findall(r"[\u4e00-\u9fa5]+|[A-Za-z]+", result.text):
-            await asyncio.sleep(0.08)
             yield token
         yield ""
 
@@ -396,7 +395,6 @@ class WhisperASRAdapter:
         # Whisper 不支持真正的流式，先整体识别再按词输出
         result = await self.transcribe(audio, language=language)
         for token in re.findall(r"[\u4e00-\u9fa5]+|[A-Za-z]+", result.text):
-            await asyncio.sleep(0.08)
             yield token
         yield ""
 
@@ -441,12 +439,21 @@ class VolcFlashASRAdapter(ASRAdapter):
     async def transcribe(self, audio_bytes, *, language="zh", sample_rate=None):
         b64 = base64.b64encode(audio_bytes).decode("ascii")
         uid = self._api_key[:16]
-        head = audio_bytes[:8] if len(audio_bytes) >= 8 else b""
+        head = audio_bytes[:12] if len(audio_bytes) >= 12 else audio_bytes
         if head.startswith(b"RIFF"):
             fmt, codec = "wav", "raw"
         elif head[:4] == b"OggS":
             fmt, codec = "ogg", "opus"
+        elif head[:4] == b"\x1a\x45\xdf\xa3":
+            # 浏览器 MediaRecorder 录的是 WebM/Opus（EBML 魔数），此前被误标成 ogg
+            fmt, codec = "webm", "opus"
+        elif head[4:8] == b"ftyp":
+            fmt, codec = "m4a", "aac"
+        elif head[:3] == b"ID3" or head[:2] == b"\xff\xfb":
+            fmt, codec = "mp3", "raw"
         else:
+            # 未知容器：如实记录，默认按 ogg/opus 兜底
+            logger.warning("豆包 ASR 收到未知音频容器，头部字节={}", head.hex())
             fmt, codec = "ogg", "opus"
         payload = {
             "user": {"uid": uid},

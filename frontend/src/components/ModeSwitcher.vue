@@ -4,10 +4,16 @@ import type { Mode } from '@/types'
 import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
-const modes: { value: Mode; label: string; desc: string; icon: 'eye' | 'ear' | 'user' }[] = [
+const modes: {
+  value: Mode
+  label: string
+  desc: string
+  icon: 'eye' | 'ear' | 'user' | 'eye-off'
+}[] = [
   { value: 'standard', label: '标准', desc: '默认显示', icon: 'eye' },
   { value: 'hearing', label: '听障', desc: '高对比度·大字幕', icon: 'ear' },
   { value: 'elderly', label: '老年', desc: '大字体·慢速语音', icon: 'user' },
+  { value: 'visual', label: '视障', desc: '黑底黄字·大焦点', icon: 'eye-off' },
 ]
 </script>
 

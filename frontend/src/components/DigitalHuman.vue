@@ -2,7 +2,6 @@
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 
 import BIcon, { type IconName } from '@/components/BIcon.vue'
-import WidgetPanel from '@/components/WidgetPanel.vue'
 import { api } from '@/services/api'
 import { useSessionStore } from '@/stores/session'
 
@@ -34,8 +33,6 @@ declare global {
 
 const XINGYUN_SDK_URL = 'https://media.xingyun3d.com/xingyun3d/general/litesdk/xmovAvatar@latest.js'
 const XINGYUN_GATEWAY = 'https://nebula-agent.xingyun3d.com/user/v1/ttsa/session'
-const xingyunAppId = (import.meta.env.VITE_XINGYUN_APP_ID as string | undefined)?.trim()
-const xingyunAppSecret = (import.meta.env.VITE_XINGYUN_APP_SECRET as string | undefined)?.trim()
 const xingyunReady = ref(false)
 const xingyunLoading = ref(false)
 const xingyunDownloadProgress = ref<number | null>(null)
@@ -46,8 +43,8 @@ let xingyunWatchdog: number | null = null
 /**
  * 解析星云凭据。
  *
- * 优先使用构建期注入的 VITE_XINGYUN_*；未配置时向后端 `/api/config/public`
- * 取运行时配置——这样凭据不必被内联进静态产物，运营侧也能不重新构建前端就轮换密钥。
+ * 只从后端 `/api/config/public` 取运行时配置——凭据不内联进静态产物，
+ * 运营侧不重新构建前端即可轮换密钥。
  *
  * 注意：星云 SDK 的设计要求 appSecret 出现在浏览器中（见官方快速开始文档），
  * 因此该密钥对终端用户本质上是公开的，必须使用域名白名单 + 配额限制的专用密钥。
@@ -58,10 +55,6 @@ let credentialsResolved = false
 async function resolveCredentials(): Promise<{ appId: string; appSecret: string } | null> {
   if (credentialsResolved) return resolvedCredentials
   credentialsResolved = true
-  if (xingyunAppId && xingyunAppSecret) {
-    resolvedCredentials = { appId: xingyunAppId, appSecret: xingyunAppSecret }
-    return resolvedCredentials
-  }
   try {
     const cfg = await api.getPublicConfig()
     if (cfg.xingyun_app_id && cfg.xingyun_app_secret) {
@@ -83,6 +76,9 @@ function speakWithBrowser(text: string, speed: number) {
   const voices = window.speechSynthesis.getVoices()
   const zhVoice = voices.find((v) => v.lang.startsWith('zh'))
   if (zhVoice) utter.voice = zhVoice
+  // 浏览器语音播报结束：复位播报状态，避免「正在播报」一直显示
+  utter.onend = () => store.stopSpeaking()
+  utter.onerror = () => store.stopSpeaking()
   window.speechSynthesis.speak(utter)
 }
 
@@ -222,8 +218,13 @@ async function initXingyun() {
 
 function speakWithXingyun(text: string): boolean {
   if (!xingyunReady.value || !xingyunAvatar || xingyunError.value || !text) return false
-  xingyunAvatar.speak(buildSsml(text))
-  return true
+  try {
+    xingyunAvatar.speak(buildSsml(text))
+    return true
+  } catch (e) {
+    console.warn('[Xingyun] speak failed:', e)
+    return false
+  }
 }
 
 // 构造带语速的 SSML（rate 为百分比，100=原速）
@@ -264,6 +265,10 @@ function ensureXingyunMuted() {
 // 因此：speak 仅记录状态并启动「音频兜底定时器」，audio_ready 就绪后
 // 在同一时刻启动 SDK 播报（字幕+嘴型）与音频播放，保证三者同步。
 let speakFallbackTimer: number | null = null
+// 播报同步防抖：同一轮播报可能同时触发多个 watch（speaking / speakingAudioUrl /
+// speakingRunId），导致 startSpeechSync 被重复调用、SDK speak 连续执行两次
+// （第二次会打断第一次，造成嘴型/字幕不稳定甚至卡住）。加 300ms 窗口防抖。
+let speechSyncPending = false
 
 function clearSpeakFallback() {
   if (speakFallbackTimer !== null) {
@@ -274,9 +279,18 @@ function clearSpeakFallback() {
 
 // 同时启动：SDK 播报（字幕+嘴型） + 音频播放（或降级浏览器 TTS）
 function startSpeechSync() {
+  if (speechSyncPending) return
+  speechSyncPending = true
+  window.setTimeout(() => {
+    speechSyncPending = false
+  }, 300)
   const text = store.speakingText
   if (!text) return
   const speed = store.speakingSpeed || 1.0
+  // 记录本轮播报 run_id：防止旧音频的 ended 事件打断新一轮 SDK 播报
+  if (audioEl.value) {
+    audioEl.value.dataset.runId = store.speakingRunId ?? ''
+  }
   // 先准备音频源（触发解码），让 audio.play() 在 SDK 播报启动后尽快出声
   const hasAudio = Boolean(store.speakingAudioUrl && audioEl.value)
   if (hasAudio) {
@@ -307,18 +321,47 @@ function startSpeechSync() {
 
 // 音频播放结束：停止数字人嘴型动作，确保音画同步
 function onAudioEnded() {
-  // 尝试停止星云 SDK 播报（如果 SDK 支持 stop 方法）
+  // 旧音频的 ended（已播放到末尾但期间新一轮播报已替换音频源）：
+  // 直接忽略，避免打断当前轮次的 SDK 字幕/嘴型
+  const currentRunId = store.speakingRunId ?? ''
+  if (audioEl.value && audioEl.value.dataset.runId !== currentRunId) {
+    return
+  }
+  // 不主动调用 SDK stop()：让星云 SDK 的 TTSA 播报自然结束（SDK 会自动回到空闲状态）。
+  // 音频播完立即 stop() 会触发 SDK 日志 "10006 ttsa主动关闭 / client quit"，
+  // 连续对话时频繁开关 TTSA 会话会导致后续 speak 被拒绝，数字人嘴型/字幕不再更新（卡住）。
+  // 仅停止浏览器 TTS 兜底（SpeechSynthesis 没有自然结束回调链）
+  if (window.speechSynthesis.speaking) {
+    window.speechSynthesis.cancel()
+  }
+  // 复位播报状态：音频播完即恢复待机，防止「正在播报」永久显示
+  store.stopSpeaking()
+}
+
+// 音频加载/播放失败（404、解码失败、被阻止等）：
+// ended 不会触发，若不处理播报状态将卡 60 秒才被兜底定时器复位。
+// 处理：停止 SDK 播报（避免视觉与声音双轨冲突）→ 降级浏览器语音（其 onend 会复位状态）。
+function onAudioError() {
+  const currentRunId = store.speakingRunId ?? ''
+  if (audioEl.value && audioEl.value.dataset.runId !== currentRunId) {
+    return
+  }
+  console.warn('[Audio] 音频加载/播放失败，降级为浏览器语音')
   const stoppable = xingyunAvatar as unknown as { stop?: () => void } | null
   if (stoppable && typeof stoppable.stop === 'function') {
     try {
       stoppable.stop()
     } catch (e) {
-      console.warn('[Xingyun] stop speak failed:', e)
+      console.warn('[Xingyun] stop on audio error failed:', e)
     }
   }
-  // 浏览器 TTS 兜底：停止 speechSynthesis
   if (window.speechSynthesis.speaking) {
     window.speechSynthesis.cancel()
+  }
+  if (store.speakingText) {
+    speakWithBrowser(store.speakingText, store.speakingSpeed || 1.0)
+  } else {
+    store.stopSpeaking()
   }
 }
 
@@ -361,6 +404,30 @@ watch(
   },
 )
 
+// 新一轮 SSE 播报（run_id 变化）：即使 speaking 已是 true（无 false→true 边沿，
+// 例如连续消息或上一轮未完全结束）也重置并重新同步启动，
+// 修复数字人卡住、字幕不更新的问题。本地播报（run_id=null）由 speakTick watch 驱动。
+watch(
+  () => store.speakingRunId,
+  (runId) => {
+    if (!runId || !store.speaking || !store.speakingText) return
+    clearSpeakFallback()
+    if (store.speakingAudioUrl) {
+      startSpeechSync()
+    } else {
+      // 异步模式：等 audio_ready；4 秒内音频未就绪则兜底，避免播报卡死
+      speakFallbackTimer = window.setTimeout(() => {
+        if (store.speaking && !store.speakingAudioUrl) {
+          startSpeechSync()
+          if (xingyunReady.value && !xingyunError.value && store.speakingText) {
+            speakWithBrowser(store.speakingText, store.speakingSpeed || 1.0)
+          }
+        }
+      }, 4000)
+    }
+  },
+)
+
 // 本地播报请求（store.speak：重复一遍 / 路线语音导航）：无需等 TTS 音频，立即播报
 watch(
   () => store.speakTick,
@@ -371,11 +438,31 @@ watch(
   },
 )
 
+// 主动打断（发送新消息）：强制停止 SDK 正在进行的 TTSA 会话，
+// 避免新旧 speak 在 SDK 内叠加/冲突导致数字人嘴型、字幕卡住。
+// 与音频自然结束（onAudioEnded）不同：自然结束让 SDK 播完，这里必须立即停。
+watch(
+  () => store.sdkInterruptTick,
+  () => {
+    const stoppable = xingyunAvatar as unknown as { stop?: () => void } | null
+    if (stoppable && typeof stoppable.stop === 'function') {
+      try {
+        stoppable.stop()
+      } catch (e) {
+        console.warn('[Xingyun] interrupt stop failed:', e)
+      }
+    }
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel()
+    }
+  },
+)
+
 onMounted(async () => {
   // 等待 DOM 渲染完成，确保 v-if 的容器已挂载到 document
   await nextTick()
   // 首屏加速：延迟一帧初始化数字人 SDK，避免阻塞首屏渲染
-  // （preload 已在 index.html 预下载 SDK 脚本，此处仅执行初始化）
+  // （SDK 脚本在 initXingyun 内按需动态注入，未配置数字人时不下载数 MB 脚本）
   setTimeout(() => void initXingyun(), 100)
 })
 
@@ -401,7 +488,14 @@ onUnmounted(() => {
 // 顶部状态：说话/思考/加载/待机
 const statusMeta = ref<{ icon: IconName; label: string }>({ icon: 'cpu', label: '待机' })
 watch(
-  () => [store.speaking, store.agentStatus, xingyunLoading.value, xingyunReady.value, xingyunError.value] as const,
+  () =>
+    [
+      store.speaking,
+      store.agentStatus,
+      xingyunLoading.value,
+      xingyunReady.value,
+      xingyunError.value,
+    ] as const,
   ([speaking, agentStatus, loading, ready, error]) => {
     if (speaking) statusMeta.value = { icon: 'volume', label: '正在播报…' }
     else if (loading) statusMeta.value = { icon: 'refresh', label: '数字人加载中…' }
@@ -482,17 +576,9 @@ watch(
         <BIcon name="bell" :size="14" />
         重要信息，请注意确认
       </div>
-
-      <!-- 服务信息：收纳在数字人画面右下方（只展示地点/路线等有用信息） -->
-      <div
-        v-if="store.widgets.some((w) => w.widget_type !== 'knowledge_source')"
-        class="widget-dock"
-      >
-        <WidgetPanel />
-      </div>
     </div>
 
-    <audio ref="audioEl" hidden @ended="onAudioEnded"></audio>
+    <audio ref="audioEl" hidden @ended="onAudioEnded" @error="onAudioError"></audio>
   </section>
 </template>
 
@@ -605,7 +691,6 @@ watch(
   background: rgba(239, 68, 68, 0.18);
 }
 
-/* ===== 降级兜底字幕（仅星云不可用时显示，就绪时用 SDK 自带字幕） ===== */
 /* ===== 重要信息确认提示（画面底部居中，仅关键信息时出现） ===== */
 .repeat-hint {
   position: absolute;
@@ -623,65 +708,6 @@ watch(
   background: rgba(0, 0, 0, 0.55);
   border-radius: var(--radius-pill);
   backdrop-filter: blur(4px);
-}
-
-/* ===== 服务信息悬浮容器（透明，卡片自带样式，不再套白框） ===== */
-.widget-dock {
-  position: absolute;
-  right: 16px;
-  bottom: 18px;
-  z-index: 7;
-  width: 330px;
-  max-width: 42%;
-  max-height: calc(100% - 48px);
-  display: flex;
-  flex-direction: column;
-}
-.widget-dock :deep(.widget-panel) {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 0;
-  max-height: inherit;
-  overflow-y: auto;
-}
-
-@media (max-width: 820px) {
-  .widget-dock {
-    width: 280px;
-    max-width: 50%;
-  }
-}
-@media (max-width: 640px) {
-  .widget-dock {
-    width: 220px;
-    max-width: 60%;
-  }
-}
-
-.repeat-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: center;
-  color: #ffd43b;
-  font-size: 0.86em;
-  font-weight: 700;
-  padding: 5px 14px;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: var(--radius-pill);
-  backdrop-filter: blur(4px);
-}
-
-/* ===== 数字人画面内字幕 ===== */
-.dh-subtitle.hearing {
-  font-size: 1.28em;
-  font-weight: 600;
-  max-width: calc(100% - 380px);
-}
-.dh-subtitle.elderly {
-  font-size: 1.15em;
-  font-weight: 600;
 }
 
 /* ===== 占位/加载/错误 ===== */

@@ -17,7 +17,7 @@ from app.models.db_models import (
 )
 
 Scene = Literal["hospital", "government"]
-Mode = Literal["standard", "hearing", "elderly"]
+Mode = Literal["standard", "hearing", "elderly", "visual"]
 ClientRole = Literal["user", "staff"]
 FontSize = Literal["small", "medium", "large"]
 SpeechRate = Literal["normal", "slow"]
@@ -62,6 +62,8 @@ class MessageCreate(BaseModel):
     speaker: str | None = Field(default=None, max_length=64)
     language: str = Field(default="zh", max_length=16)
     message_type: Literal["text", "audio", "transcript"] = "text"
+    # 轮椅模式开关：前端当前开关状态随消息上送，未传时回退到持久化偏好
+    wheelchair: bool | None = None
 
     @field_validator("content")
     @classmethod
@@ -118,6 +120,7 @@ class PreferenceSave(BaseModel):
     speech_rate: SpeechRate | None = None
     language: str | None = Field(default=None, max_length=16)
     high_contrast: bool | None = None
+    wheelchair_mode: bool | None = None
     frequent_places: dict | None = None
 
     @field_validator("frequent_places")
@@ -141,4 +144,5 @@ class PreferenceOut(BaseModel):
     speech_rate: str
     language: str
     high_contrast: bool
+    wheelchair_mode: bool = False
     frequent_places: dict = {}

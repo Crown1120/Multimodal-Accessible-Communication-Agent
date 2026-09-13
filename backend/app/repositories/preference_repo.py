@@ -41,6 +41,7 @@ class PreferenceRepository:
         speech_rate: str = "normal",
         language: str = "zh",
         high_contrast: bool = False,
+        wheelchair_mode: bool = False,
         frequent_places: dict | None = None,
         user_id: str | None = None,
     ) -> UserPreference:
@@ -51,6 +52,7 @@ class PreferenceRepository:
             existing.speech_rate = speech_rate
             existing.language = language
             existing.high_contrast = high_contrast
+            existing.wheelchair_mode = wheelchair_mode
             if frequent_places is not None:
                 existing.frequent_places = frequent_places
             await self.db.flush()
@@ -64,6 +66,7 @@ class PreferenceRepository:
             speech_rate=speech_rate,
             language=language,
             high_contrast=high_contrast,
+            wheelchair_mode=wheelchair_mode,
             frequent_places=frequent_places or {},
         )
         self.db.add(pref)

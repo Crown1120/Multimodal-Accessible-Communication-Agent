@@ -10,6 +10,7 @@ import PreferencePanel from '@/components/PreferencePanel.vue'
 import SubtitleBar from '@/components/SubtitleBar.vue'
 import Toast from '@/components/Toast.vue'
 import ElderlyGuide from '@/components/ElderlyGuide.vue'
+import WidgetPanel from '@/components/WidgetPanel.vue'
 import { useToast } from '@/composables/useToast'
 import { useSessionStore } from '@/stores/session'
 
@@ -116,12 +117,16 @@ const statusInfo = computed(() => {
       <!-- 视频通话主画面：数字人居中，服务信息也收纳在数字人框内 -->
       <section class="stage" aria-label="视频通话画面">
         <DigitalHuman />
+        <!-- 服务信息浮动面板：地图/路线规划等，叠加在数字人画面右下角 -->
+        <div class="widget-overlay">
+          <WidgetPanel />
+        </div>
         <div class="control-bar">
           <InputBar />
         </div>
       </section>
 
-      <!-- 沟通记录栏：实时字幕 + 双向消息历史（听障沟通核心） -->
+      <!-- 沟通记录栏：实时字幕 + 双向消息历史（听障沟通与降级模式的核心） -->
       <section class="conversation" aria-label="沟通记录">
         <SubtitleBar />
         <MessageList />
@@ -287,12 +292,38 @@ const statusInfo = computed(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  min-width: 0;
+  min-width: 320px;
+  max-width: 560px;
   border-radius: var(--radius-lg);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
+}
+
+/* 服务信息浮动面板：叠加在数字人画面右下角，不遮挡输入栏 */
+.widget-overlay {
+  position: absolute;
+  right: 16px;
+  bottom: 148px;
+  width: 340px;
+  max-height: calc(100% - 168px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  z-index: 10;
+  pointer-events: auto;
+}
+
+/* 窄屏时浮动面板宽度自适应 */
+@media (max-width: 768px) {
+  .widget-overlay {
+    right: 8px;
+    left: 8px;
+    width: auto;
+    bottom: 138px;
+    max-height: calc(100% - 158px);
+  }
 }
 
 /* 窄屏 / 分屏场景：改为上下排列，保证字幕始终可见 */
@@ -301,10 +332,12 @@ const statusInfo = computed(() => {
     flex-direction: column;
   }
   .stage {
-    flex: 1 1 55%;
+    flex: 1;
   }
   .conversation {
-    flex: 1 1 45%;
+    flex: 0 0 38vh;
+    min-width: 0;
+    max-width: none;
   }
 }
 

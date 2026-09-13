@@ -13,9 +13,11 @@ class AgentState(TypedDict, total=False):
     session_id: str
     run_id: str
     scene: str
+    mode: str  # standard | hearing | elderly | visual
+    wheelchair: bool
     user_text: str
     history: list[dict[str, str]]
-    intent: str  # knowledge | route | service | translate | chitchat
+    intent: str  # knowledge | route | service | translate | chitchat | privacy
     rag_context: str
     rag_sources: list[dict[str, Any]]
     tool_result: dict[str, Any] | None

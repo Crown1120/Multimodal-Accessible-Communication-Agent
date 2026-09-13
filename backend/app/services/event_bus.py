@@ -30,6 +30,13 @@ _REPLAY_BUFFER = 256
 _QUEUE_MAXSIZE = 1024
 # 最后一个订阅者离开后，保留会话状态多久（秒），便于断线重连补齐
 _REPLAY_GRACE_S = 300.0
+# 超过该大小的载荷不进入重放缓冲：重放用于恢复文本状态，
+# 大载荷（如误用的 base64 音频）会撑爆常驻内存且重连时被整批重播
+_REPLAY_PAYLOAD_LIMIT = 64 * 1024
+
+
+def _replayable(event: Event) -> bool:
+    return len(str(event.data)) <= _REPLAY_PAYLOAD_LIMIT
 
 
 class Subscriber:
@@ -56,7 +63,8 @@ class _SessionStream:
         async with self._lock:
             self._seq += 1
             event.seq = self._seq
-            self._buffer.append(event)
+            if _replayable(event):
+                self._buffer.append(event)
         self._last_active = time.monotonic()
         for sub in list(self._subscribers):
             if sub.overflowed:
@@ -139,7 +147,12 @@ class EventBus:
         return await self.stream(session_id).subscribe(last_seq)
 
     def unsubscribe(self, session_id: str, sub: Subscriber) -> None:
-        self.stream(session_id).unsubscribe(sub)
+        # 用 .get 而非 self._streams[session_id]：defaultdict 会为已 drop 的会话
+        # 重新创建一个空流，并再挂一个 300s 的回收定时器（轻微泄漏）
+        stream = self._streams.get(session_id)
+        if stream is None:
+            return
+        stream.unsubscribe(sub)
 
     def drop(self, session_id: str) -> None:
         """立即释放会话的全部事件状态（会话关闭 / 空闲超时）。"""

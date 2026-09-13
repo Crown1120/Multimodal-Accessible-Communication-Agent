@@ -47,3 +47,6 @@ Desktop.ini
 *.log
 *.tmp
 *.bak
+
+# 进程守护脚本（start-all.ps1）写入的 PID 记录
+.bridge-pids.json

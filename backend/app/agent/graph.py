@@ -6,6 +6,7 @@ LangGraph 不可用时回退到顺序节点执行，节点逻辑保持一致。
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -39,6 +40,28 @@ _ROUTE_HINTS = (
 _NAV_HELP_HINTS = ("找不到", "迷路", "走丢", "找不到了", "不见了", "不知道怎么走")
 _LOCATION_QUERY_HINTS = ("在哪", "几楼", "位置", "在哪儿", "在哪里", "在哪层", "在几楼")
 _TRANSLATE_HINTS = ("翻译", "英语", "怎么说", "英文", "translate")
+
+# 寒暄/感谢/告别：直接走 LLM 自然回复，不必检索知识库
+_CHITCHAT_HINTS = (
+    "你好", "您好", "早上好", "下午好", "晚上好", "谢谢", "感谢", "辛苦了",
+    "再见", "拜拜", "在吗", "你是谁", "你叫什么", "能做什么", "会什么",
+    "hello", "hi", "thanks", "thank you", "bye",
+)
+
+# 翻译请求里的指令词/语言名，交给翻译器前需要剥离，避免「这句话英语怎么说」被整句翻译
+_TRANSLATE_INSTRUCTION_RE = re.compile(
+    r"(翻译成?|翻译一下|帮我翻译|怎么说|怎么读|这句话|这句|这个词|这个|那一?句|"
+    r"成?英语|成?英文|成?中文|成?汉语|英语|英文|中文|汉语|translate|to english|in english|[：:“”\"'`])",
+    re.IGNORECASE,
+)
+
+
+def _strip_translate_instruction(text: str) -> str:
+    """剥离翻译指令词，只保留真正待译内容；剥光了则回退原文。"""
+    cleaned = _TRANSLATE_INSTRUCTION_RE.sub("", text)
+    # 去掉首尾空白与中英文标点（不用 str.strip(多字符)，避免 B005 语义歧义）
+    cleaned = re.sub(r"^[\s，。？?!！~～、]+|[\s，。？?!！~～、]+$", "", cleaned)
+    return cleaned or text.strip()
 
 # 患者/他人隐私查询拦截：明确指向具体患者的住院、床位、病情等
 _PRIVACY_STRONG = (
@@ -203,7 +226,12 @@ class BridgeAgent:
         text = state.get("user_text", "")
         scene = state.get("scene", "hospital")
 
-        tool_name, args = self._select_tool(intent, text, scene)
+        tool_name, args = self._select_tool(
+            intent,
+            text,
+            scene,
+            wheelchair=bool(state.get("wheelchair", False)),
+        )
         if not tool_name:
             return {"tool_result": None, "widget": None}
 
@@ -315,7 +343,15 @@ class BridgeAgent:
             return "privacy"
         if any(h in text for h in _TRANSLATE_HINTS):
             return "translate"
+        # 寒暄：短句且不含地点词时才判定，避免「谢谢，挂号在哪」被误判
         loc = next((k for k in _LOCATION_KEYWORDS if k in text), "")
+        compact = text.strip(" ，。？?!~～")
+        if (
+            not loc
+            and len(compact) <= 12
+            and any(h.lower() in compact.lower() for h in _CHITCHAT_HINTS)
+        ):
+            return "chitchat"
         # 明确路线/带路类
         if any(h in text for h in _ROUTE_HINTS) or ("从" in text and "到" in text):
             return "route"
@@ -342,14 +378,23 @@ class BridgeAgent:
             return True
         return False
 
-    def _select_tool(self, intent: str, text: str, scene: str) -> tuple[str, dict]:
+    def _select_tool(
+        self, intent: str, text: str, scene: str, *, wheelchair: bool = False
+    ) -> tuple[str, dict]:
         location = next((k for k in _LOCATION_KEYWORDS if k in text), "")
         if intent == "translate":
             # 中文用户翻译请求默认目标为英文；明确要求中文时才翻译为中文
             target = "zh" if any(t in text for t in ("中文", "汉语", "chinese", "翻译成中文")) else "en"
-            return "translate", {"text": text, "target_lang": target}
+            # 剥离「翻译/怎么说/这句话」等指令词，只把真正待译内容交给翻译器
+            payload_text = _strip_translate_instruction(text)
+            return "translate", {"text": payload_text, "target_lang": target}
         if intent == "route":
-            return "route_query", {"origin": "大厅入口", "destination": location or "服务台", "scene": scene}
+            return "route_query", {
+                "origin": "大厅入口",
+                "destination": location or "服务台",
+                "scene": scene,
+                "wheelchair": wheelchair,
+            }
         if intent == "service":
             return "service_query", {"keyword": location, "scene": scene}
         return "", {}

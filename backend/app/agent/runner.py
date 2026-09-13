@@ -17,6 +17,7 @@ from app.core.events import EventType, make_event
 from app.core.logging import get_logger
 from app.core.task_manager import background_tasks
 from app.models.db_models import Session
+from app.repositories.preference_repo import PreferenceRepository
 from app.repositories.session_repo import (
     AgentRunRepository,
     MessageRepository,
@@ -34,12 +35,24 @@ class AgentRunner:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def run(self, session: Session, user_text: str, message_id: str, run_id: str) -> None:
+    async def run(
+        self,
+        session: Session,
+        user_text: str,
+        message_id: str,
+        run_id: str,
+        wheelchair: bool | None = None,
+    ) -> None:
         started_at = time.perf_counter()
         sid = session.id
         run_repo = AgentRunRepository(self.db)
         msg_repo = MessageRepository(self.db)
         session_repo = SessionRepository(self.db)
+
+        # 轮椅模式：消息未显式上送时（如语音入口），回退到持久化偏好
+        if wheelchair is None:
+            pref = await PreferenceRepository(self.db).get_by_session(sid)
+            wheelchair = bool(pref.wheelchair_mode) if pref is not None else False
 
         run = await run_repo.create(session_id=sid, intent=None, run_id=run_id)
 
@@ -65,6 +78,8 @@ class AgentRunner:
             "session_id": sid,
             "run_id": run.id,
             "scene": session.scene,
+            "mode": session.mode,
+            "wheelchair": wheelchair,
             "user_text": user_text,
             "history": history,
             "intent": "knowledge",

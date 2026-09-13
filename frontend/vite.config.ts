@@ -17,14 +17,10 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
-        // 将 /api 与 SSE/WebSocket 转发到后端，避免跨域
+        // 将 /api（REST + SSE 事件流）转发到后端，避免跨域。
+        // 项目只用 SSE，无 WebSocket 代码，不再保留 /ws 死代理。
         '/api': {
           target: backendUrl,
-          changeOrigin: true,
-        },
-        '/ws': {
-          target: backendUrl.replace(/^http/, 'ws'),
-          ws: true,
           changeOrigin: true,
         },
       },

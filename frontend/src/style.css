@@ -348,7 +348,6 @@ select {
   box-shadow: var(--shadow-sm);
 }
 
-
 /* ===== 视障模式（visual） ===== */
 [data-mode='visual'] {
   --color-bg: #000000;

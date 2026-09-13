@@ -103,6 +103,7 @@ class UserPreference(Base):
     speech_rate: Mapped[str] = mapped_column(String(16), default="normal")
     language: Mapped[str] = mapped_column(String(16), default="zh")
     high_contrast: Mapped[bool] = mapped_column(default=False)
+    wheelchair_mode: Mapped[bool] = mapped_column(default=False)
     frequent_places: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 

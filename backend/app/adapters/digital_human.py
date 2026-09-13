@@ -180,14 +180,15 @@ class MinimalDigitalHumanAdapter:
     def _speed_for_mode(mode: str) -> float:
         if mode == "elderly":
             return _ELDERLY_SPEED
-        if mode == "hearing":
+        if mode in ("hearing", "visual"):
+            # 视障用户主要依靠语音获取信息，同样适当放慢
             return _HEARING_SPEED
         return settings.tts_speed
 
     @staticmethod
     def _should_repeat(text: str, mode: str) -> bool:
-        """听障/老年模式下，关键信息需要重复确认。"""
-        if mode not in ("hearing", "elderly"):
+        """听障/老年/视障模式下，关键信息需要重复确认。"""
+        if mode not in ("hearing", "elderly", "visual"):
             return False
         return any(kw in text for kw in _IMPORTANT_KEYWORDS)
 

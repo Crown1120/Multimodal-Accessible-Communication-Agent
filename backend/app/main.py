@@ -20,6 +20,32 @@ from app.core.middleware import RequestContextMiddleware
 
 logger = get_logger()
 
+# 业务错误码 -> HTTP 状态码：此前所有 BridgeError 一律 400，
+# 前端无法区分「会话不存在」「会话已关闭」和「参数错误」
+_ERROR_STATUS: dict[ErrorCode, int] = {
+    ErrorCode.BAD_REQUEST: 400,
+    ErrorCode.VALIDATION_ERROR: 422,
+    ErrorCode.UNAUTHORIZED: 401,
+    ErrorCode.NOT_FOUND: 404,
+    ErrorCode.SESSION_NOT_FOUND: 404,
+    ErrorCode.SESSION_CLOSED: 409,
+    ErrorCode.MESSAGE_EMPTY: 400,
+    ErrorCode.AGENT_LOW_CONFIDENCE: 400,
+    ErrorCode.AGENT_TIMEOUT: 504,
+    ErrorCode.AGENT_UNEXPECTED: 500,
+    ErrorCode.RAG_NO_RESULT: 404,
+    ErrorCode.RAG_LOW_CONFIDENCE: 404,
+    ErrorCode.RAG_INDEX_FAILED: 500,
+    ErrorCode.TOOL_NOT_FOUND: 404,
+    ErrorCode.TOOL_PARAM_INVALID: 400,
+    ErrorCode.TOOL_TIMEOUT: 504,
+    ErrorCode.TOOL_FAILED: 502,
+    ErrorCode.ADAPTER_LLM_FAILED: 502,
+    ErrorCode.ADAPTER_ASR_FAILED: 502,
+    ErrorCode.ADAPTER_TTS_FAILED: 502,
+    ErrorCode.ADAPTER_DH_FAILED: 502,
+}
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -84,7 +110,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(BridgeError)
     async def handle_bridge_error(_req: Request, exc: BridgeError):
         return JSONResponse(
-            status_code=400,
+            status_code=_ERROR_STATUS.get(exc.code, 400),
             content={
                 "code": exc.code.value,
                 "message": exc.message,
@@ -136,12 +162,14 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def handle_unexpected(_req: Request, exc: Exception):
         logger.exception("未处理异常")
+        # 内部异常细节只在调试模式回传，生产环境只给通用提示，避免泄漏路径/SQL/第三方报错
+        details = {"reason": str(exc)[:200]} if settings.debug else {}
         return JSONResponse(
             status_code=500,
             content={
                 "code": ErrorCode.INTERNAL_ERROR.value,
                 "message": "服务内部错误，请稍后重试",
-                "details": {"reason": str(exc)[:200]},
+                "details": details,
             },
         )
 

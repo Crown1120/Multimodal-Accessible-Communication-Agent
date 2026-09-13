@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.adapters.asr import get_asr_adapter, get_asr_adapter_name
 from app.agent.runner import SimpleAgentRunner
 from app.core.config import settings
-from app.core.errors import AdapterError, ErrorCode
+from app.core.errors import AdapterError, BridgeError, ErrorCode
 from app.core.events import EventType, make_event, to_sse
 from app.core.logging import get_logger
 from app.core.security import rate_limit, read_upload_limited
@@ -114,7 +114,7 @@ async def send_message(
     # 异步启动 Agent（使用独立 DB 会话，避免与请求会话生命周期冲突）
     run_id = new_run_id()
     background_tasks.create(
-        _run_agent(session_id, message.content, message.id, run_id),
+        _run_agent(session_id, message.content, message.id, run_id, wheelchair=payload.wheelchair),
         name=f"agent:{session_id}:{run_id}",
     )
     return SendMessageResponse(run_id=run_id, message_id=message.id)
@@ -146,47 +146,42 @@ async def upload_audio(
     # 分块读取并强制大小上限，避免任意大小文件读入内存
     audio_bytes = await read_upload_limited(audio)
     if not audio_bytes:
-        raise AdapterError(ErrorCode.ADAPTER_ASR_FAILED, "音频为空")
+        # 空文件属于客户端请求问题（400），不是上游适配器故障（502）
+        raise BridgeError(ErrorCode.BAD_REQUEST, "音频为空")
 
     asr = get_asr_adapter()
 
-    # 流式识别：逐步推送 partial 字幕
-    # 如果第一个适配器失败（如豆包ASR资源未开通），自动重试到下一个适配器
-    partial_text = ""
-    try:
-        async for token in asr.stream_transcribe(audio_bytes, language=language):
+    # 流式识别：逐步推送 partial 字幕。
+    # 每次尝试独立累积文本——首个适配器失败后重试时必须清空其残片，
+    # 否则两段输出会拼成「残片 + 完整结果」的重复文本。
+    async def _consume(adapter) -> str:
+        accumulated = ""
+        async for token in adapter.stream_transcribe(audio_bytes, language=language):
             if token:
-                partial_text += token
+                accumulated += token
                 await event_bus.publish(
                     session_id,
                     make_event(
                         EventType.TRANSCRIPT_PARTIAL,
                         session_id,
                         0,
-                        text=partial_text,
+                        text=accumulated,
                         speaker=speaker,
                         is_final=False,
                     ),
                 )
+        return accumulated
+
+    try:
+        partial_text = await _consume(asr)
     except AdapterError:
-        # 适配器失败后自动重试（豆包ASR降级后 get_asr_adapter 会返回 Whisper/Vosk）
+        # 适配器失败后自动重试（豆包 ASR 冷却后 get_asr_adapter 会返回 Whisper/Vosk）
         from app.adapters.asr import get_asr_adapter as _get_asr  # noqa: PLC0415
-        asr = _get_asr()
+
+        fallback = _get_asr()
         try:
-            async for token in asr.stream_transcribe(audio_bytes, language=language):
-                if token:
-                    partial_text += token
-                    await event_bus.publish(
-                        session_id,
-                        make_event(
-                            EventType.TRANSCRIPT_PARTIAL,
-                            session_id,
-                            0,
-                            text=partial_text,
-                            speaker=speaker,
-                            is_final=False,
-                        ),
-                    )
+            partial_text = await _consume(fallback)
+            asr = fallback
         except AdapterError as e2:
             # ASR 失败：推送 error 事件并降级提示
             await event_bus.publish(
@@ -268,7 +263,13 @@ async def upload_audio(
     )
 
 
-async def _run_agent(session_id: str, user_text: str, message_id: str, run_id: str, wheelchair: bool = False) -> None:
+async def _run_agent(
+    session_id: str,
+    user_text: str,
+    message_id: str,
+    run_id: str,
+    wheelchair: bool | None = None,
+) -> None:
     async with _get_session_lock(session_id):
         async with async_session_factory() as task_db:
             try:
@@ -277,7 +278,7 @@ async def _run_agent(session_id: str, user_text: str, message_id: str, run_id: s
                 runner = SimpleAgentRunner(task_db)
                 try:
                     await asyncio.wait_for(
-                        runner.run(session, user_text, message_id, run_id),
+                        runner.run(session, user_text, message_id, run_id, wheelchair=wheelchair),
                         timeout=settings.agent_timeout_seconds,
                     )
                 except asyncio.TimeoutError:
@@ -371,6 +372,7 @@ async def save_preferences(
         speech_rate=payload.speech_rate,
         language=payload.language,
         high_contrast=payload.high_contrast,
+        wheelchair_mode=payload.wheelchair_mode,
         frequent_places=payload.frequent_places,
     )
     # 同步会话模式，保证偏好与会话状态一致
@@ -418,6 +420,10 @@ async def stream_events(
     断线重连恢复：优先读 `Last-Event-ID` 请求头，其次读 `?last_event_id=`
     查询参数（浏览器 EventSource 无法自定义请求头，重连时需要查询参数）。
     """
+    # 先校验会话存在且未关闭：否则任意随机 id 都会挂起一条常驻 SSE 长连接
+    async with async_session_factory() as check_db:
+        await SessionRepository(check_db).get(session_id)
+
     last_seq = 0
     if last_event_id is not None:
         last_seq = max(0, last_event_id)

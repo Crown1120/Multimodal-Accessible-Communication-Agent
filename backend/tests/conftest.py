@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 from pathlib import Path
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -20,13 +18,23 @@ os.environ.setdefault("SQLITE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("CHROMA_PATH", str(backend_dir / "test_chroma"))
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 
+# 事件循环策略由 pytest-asyncio 的 asyncio_mode=auto 管理
+# （pyproject.toml [tool.pytest.ini_options]）；
+# pytest-asyncio 1.x 已移除对自定义 event_loop fixture 的支持，不再定义。
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """全局事件循环。"""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+
+@pytest_asyncio.fixture(autouse=True)
+async def _dispose_db_engine():
+    """每个测试结束后在当前事件循环内释放引擎连接。
+
+    内存 SQLite 使用 StaticPool（全局单连接），而 pytest-asyncio 每个测试函数
+    使用独立事件循环；若不在当前循环关闭连接，旧连接会在新循环里被 GC，
+    触发 aiosqlite「coroutine ignored GeneratorExit」/ OperationalError。
+    """
+    yield
+    from app.models.database import engine
+
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture

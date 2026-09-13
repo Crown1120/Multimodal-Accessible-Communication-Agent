@@ -314,7 +314,12 @@ class TestIntentRouting:
 
     def test_knowledge_intent(self):
         assert self.agent._classify("社保卡怎么办") == "knowledge"
-        assert self.agent._classify("你好") == "knowledge"
+
+    def test_chitchat_intent(self):
+        # 纯寒暄走 chitchat（直接自然回复），但寒暄词 + 地点仍按业务意图处理
+        assert self.agent._classify("你好") == "chitchat"
+        assert self.agent._classify("谢谢") == "chitchat"
+        assert self.agent._classify("谢谢，骨科在哪") == "service"
 
     def test_tool_selection_translate(self):
         tool, args = self.agent._select_tool("translate", "翻译骨科", "hospital")
@@ -325,6 +330,23 @@ class TestIntentRouting:
         tool, args = self.agent._select_tool("route", "骨科怎么走", "hospital")
         assert tool == "route_query"
         assert "骨科" in args["destination"]
+
+    def test_route_wheelchair_passthrough(self):
+        """轮椅开关必须透传到 route_query，否则无障碍路线分支是死代码。"""
+        _, args_off = self.agent._select_tool("route", "骨科怎么走", "hospital")
+        assert args_off["wheelchair"] is False
+        _, args_on = self.agent._select_tool(
+            "route", "骨科怎么走", "hospital", wheelchair=True
+        )
+        assert args_on["wheelchair"] is True
+
+    def test_translate_strips_instruction_words(self):
+        """翻译工具只接收待译内容，不能把「挂号英语怎么说」整句送翻。"""
+        _, args = self.agent._select_tool("translate", "挂号英语怎么说", "hospital")
+        assert args["target_lang"] == "en"
+        assert args["text"] == "挂号"
+        assert "怎么说" not in args["text"]
+        assert "英语" not in args["text"]
 
 
 class TestChromaWhere:

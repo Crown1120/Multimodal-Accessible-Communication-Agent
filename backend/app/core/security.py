@@ -59,11 +59,23 @@ class _SlidingWindowLimiter:
 
     def __init__(self) -> None:
         self._hits: dict[str, deque[float]] = defaultdict(deque)
+        self._last_purge = time.monotonic()
+
+    def _purge_expired(self, now: float, window_s: float) -> None:
+        """清理过期空桶：客户端只访问一次就离开时，其 deque 会永久驻留。"""
+        if now - self._last_purge < window_s:
+            return
+        self._last_purge = now
+        cutoff = now - window_s
+        empty = [k for k, bucket in self._hits.items() if not bucket or bucket[-1] < cutoff]
+        for k in empty:
+            self._hits.pop(k, None)
 
     def allow(self, key: str, *, limit: int, window_s: float = 60.0) -> bool:
         if limit <= 0:
             return True
         now = time.monotonic()
+        self._purge_expired(now, window_s)
         bucket = self._hits[key]
         cutoff = now - window_s
         while bucket and bucket[0] < cutoff:

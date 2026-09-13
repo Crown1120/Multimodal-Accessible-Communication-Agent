@@ -206,33 +206,6 @@ onUnmounted(() => {
   releaseStream()
 })
 
-// 图片上传（报告解读）
-const imageInputRef = ref<HTMLInputElement | null>(null)
-const imageAnalyzing = ref(false)
-const imageError = ref('')
-
-function triggerImageUpload() {
-  imageInputRef.value?.click()
-}
-
-async function onImageSelected(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file || !store.sessionId) return
-  imageError.value = ''
-  imageAnalyzing.value = true
-  try {
-    const result = await api.analyzeImage(store.sessionId, file)
-    // 将解读结果作为助手消息发送
-    await store.send(result.analysis)
-  } catch (err) {
-    imageError.value = err instanceof Error ? err.message : '图片解读失败，请重试'
-  } finally {
-    imageAnalyzing.value = false
-    if (imageInputRef.value) imageInputRef.value.value = ''
-  }
-}
-
 const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]
 </script>
 
@@ -284,27 +257,6 @@ const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]
         </span>
         <BIcon v-else name="mic" :size="18" />
       </button>
-      <!-- 图片上传按钮：报告解读 -->
-      <input
-        ref="imageInputRef"
-        type="file"
-        accept="image/*"
-        capture="environment"
-        class="image-input"
-        aria-label="上传检查报告图片"
-        @change="onImageSelected"
-      />
-      <button
-        class="image-btn"
-        :class="{ analyzing: imageAnalyzing }"
-        :disabled="!store.sessionId || store.sending || imageAnalyzing"
-        aria-label="上传检查报告图片进行AI解读"
-        title="上传报告图片"
-        @click="triggerImageUpload"
-      >
-        <span v-if="imageAnalyzing" class="spinner" aria-label="解读中"></span>
-        <BIcon v-else name="image" :size="18" />
-      </button>
       <button
         class="send"
         :disabled="!text.trim() || !store.sessionId || store.sending"
@@ -317,7 +269,7 @@ const waveBars = [0.9, 0.55, 1, 0.7, 0.45, 0.85, 0.6, 0.95, 0.5, 0.75]
       </button>
     </div>
     <div v-if="micError" class="mic-error" role="alert">{{ micError }}</div>
-    <div v-if="imageError" class="mic-error" role="alert">{{ imageError }}</div>
+
     <div v-if="sendError" class="send-error" role="alert">
       <span>{{ sendError }}</span>
       <button class="retry-btn" @click="retrySend">重试</button>
@@ -442,8 +394,13 @@ textarea:disabled {
   animation: recordPulse 1.4s ease-in-out infinite;
 }
 @keyframes recordPulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.45); }
-  50% { box-shadow: 0 0 0 10px rgba(229, 72, 77, 0); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(229, 72, 77, 0);
+  }
 }
 .mic-wave {
   display: flex;
@@ -458,11 +415,20 @@ textarea:disabled {
   background: currentColor;
   animation: micWave 0.9s ease-in-out infinite;
 }
-.mic-wave i:nth-child(2n) { animation-delay: 0.15s; }
-.mic-wave i:nth-child(3n) { animation-delay: 0.3s; }
+.mic-wave i:nth-child(2n) {
+  animation-delay: 0.15s;
+}
+.mic-wave i:nth-child(3n) {
+  animation-delay: 0.3s;
+}
 @keyframes micWave {
-  0%, 100% { transform: scaleY(0.35); }
-  50% { transform: scaleY(1); }
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
 }
 .mic-error {
   color: var(--color-danger);

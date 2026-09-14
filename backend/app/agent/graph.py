@@ -332,7 +332,12 @@ class BridgeAgent:
             await event_bus.publish(
                 sid,
                 make_event(
-                    EventType.ERROR, sid, 0, code="ERR_6001", message="回复生成失败", details={"reason": str(e)}
+                    EventType.ERROR,
+                    sid,
+                    0,
+                    code="ERR_6001",
+                    message="回复生成失败",
+                    details={"reason": str(e)} if settings.debug else {},
                 ),
             )
         return {"reply": full}

@@ -106,6 +106,7 @@ class Settings(BaseSettings):
     max_message_length: int = Field(default=2000, description="单条消息最大字符数，超出截断")
     agent_timeout_seconds: int = Field(default=30, description="Agent 运行超时秒数")
     max_upload_mb: int = Field(default=10, description="音频上传大小上限（MB）")
+    audio_max_concurrency: int = Field(default=2, description="单进程同时进行音频识别的最大请求数")
 
     # 安全与限流
     admin_token: str = Field(

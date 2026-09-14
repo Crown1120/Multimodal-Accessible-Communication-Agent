@@ -401,6 +401,7 @@ class WhisperASRAdapter:
 
 _asr_adapter: ASRAdapter | None = None
 _asr_adapter_name: str = ""  # 当前实际使用的 ASR 适配器名称（前端用于显示精度来源）
+_asr_init_lock = asyncio.Lock()
 
 # 火山 ASR 降级状态机：冷却而非永久禁用
 # _volc_cooldown_until 之前的时间戳内跳过云端 ASR；到期后自动重试恢复，
@@ -601,3 +602,13 @@ def get_asr_adapter() -> ASRAdapter:
     _asr_adapter = MockASRAdapter()
     _asr_adapter_name = "演示模式(Mock)"
     return _asr_adapter
+
+
+async def get_asr_adapter_async() -> ASRAdapter:
+    """在线程池中初始化离线适配器，避免首次模型加载阻塞事件循环。"""
+    if _asr_adapter is not None:
+        return _asr_adapter
+    async with _asr_init_lock:
+        if _asr_adapter is None:
+            return await asyncio.to_thread(get_asr_adapter)
+        return _asr_adapter

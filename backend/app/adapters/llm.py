@@ -197,36 +197,62 @@ class OpenAILLMAdapter:
         payload = self._build_payload(messages, stream=True)
         client = get_http_client()
         collected: list[str] = []
-        async with client.stream(
-            "POST",
-            f"{self.base_url}/chat/completions",
-            json=payload,
-            headers={"Authorization": f"Bearer {self.api_key}"},
-        ) as resp:
-            if resp.status_code != 200:
-                body = await resp.aread()
-                raise AdapterError(
-                    ErrorCode.ADAPTER_LLM_FAILED,
-                    f"LLM 请求失败：HTTP {resp.status_code}",
-                    details={"body": body.decode(errors="ignore")[:512]},
-                )
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                chunk = line[5:].strip()
-                if chunk == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(chunk)
-                except json.JSONDecodeError:
-                    continue
-                choices = obj.get("choices") or [{}]
-                delta = (choices[0].get("delta") or {}).get("content")
-                if delta:
-                    collected.append(delta)
-                    yield delta
-        if collected:
-            self._cache_put(cache_key, "".join(collected))
+        last_error: Exception | None = None
+        for attempt in range(settings.llm_max_retries + 1):
+            if attempt:
+                await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
+            attempt_output = False
+            retryable_error = True
+            try:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                ) as resp:
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        error = AdapterError(
+                            ErrorCode.ADAPTER_LLM_FAILED,
+                            f"LLM 请求失败：HTTP {resp.status_code}",
+                            details={"body": body.decode(errors="ignore")[:512]},
+                        )
+                        if resp.status_code < 500 and resp.status_code != 429:
+                            retryable_error = False
+                            raise error
+                        last_error = error
+                        continue
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        chunk = line[5:].strip()
+                        if chunk == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(chunk)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = obj.get("choices") or [{}]
+                        delta = (choices[0].get("delta") or {}).get("content")
+                        if delta:
+                            attempt_output = True
+                            collected.append(delta)
+                            yield delta
+                if collected:
+                    self._cache_put(cache_key, "".join(collected))
+                return
+            except Exception as exc:  # noqa: BLE001
+                # Once a token was emitted, retrying would duplicate visible text.
+                if not retryable_error or attempt_output or collected:
+                    raise
+                last_error = exc
+                logger.warning("LLM 流式请求异常（第 {} 次）：{}", attempt + 1, exc)
+        if isinstance(last_error, AdapterError):
+            raise last_error
+        raise AdapterError(
+            ErrorCode.ADAPTER_LLM_FAILED,
+            f"LLM 请求失败：{type(last_error).__name__ if last_error else 'unknown'}",
+        )
 
     async def classify_intent(self, text: str, *, scene: str = "hospital") -> str | None:
         """用 LLM 做意图分类（规则无法判定时的补充）。

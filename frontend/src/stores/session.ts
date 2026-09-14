@@ -3,7 +3,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { api } from '@/services/api'
+import { ApiError, api } from '@/services/api'
 import { subscribeEvents, type EventHandler } from '@/services/eventStream'
 import type { AgentStatus, BridgeEvent, Message, Mode, Scene, WidgetData } from '@/types'
 
@@ -64,6 +64,7 @@ export const useSessionStore = defineStore('session', () => {
   // 播报最长时长兜底：speak 后 60s 内未收到任何结束信号则强制复位，
   // 防止音频异常（加载失败/播放被阻止/事件丢失）导致数字人永久卡在「正在播报」
   let speakTimer: ReturnType<typeof setTimeout> | null = null
+  let resyncInFlight = false
   // 主动打断播报的信号：发送新消息（interruptSpeaking）时自增，
   // DigitalHuman 监听此值并强制停止星云 SDK 正在进行的播报（TTSA 会话），
   // 否则新旧 speak 在 SDK 内冲突，连续对话时数字人嘴型/字幕会卡住
@@ -302,6 +303,39 @@ export const useSessionStore = defineStore('session', () => {
           errorTimer = null
         }, 5000)
         break
+      case 'resync.required':
+        void resyncMessages()
+        break
+    }
+  }
+
+  async function resyncMessages() {
+    if (!sessionId.value || resyncInFlight) return
+    resyncInFlight = true
+    try {
+      const history = await api.getMessages(sessionId.value)
+      const serverMessages = history.map((m) => ({
+        id: m.id,
+        session_id: m.session_id,
+        role: m.role as Message['role'],
+        content: m.content,
+        speaker: m.speaker,
+        language: m.language,
+        message_type: m.message_type as Message['message_type'],
+        send_status: 'sent' as const,
+      }))
+      const serverIds = new Set(serverMessages.map((m) => m.id))
+      // Keep local pending/delta messages that have not reached the database yet.
+      // Exact-content duplicates are discarded when their persisted counterpart is found.
+      const localMessagesNotReturned = messages.value.filter(
+        (m) => !serverIds.has(m.id) &&
+          !serverMessages.some((s) => s.role === m.role && s.content === m.content),
+      )
+      messages.value = [...serverMessages, ...localMessagesNotReturned]
+    } catch {
+      // A transient sync failure is retried by the next resync event/reconnect.
+    } finally {
+      resyncInFlight = false
     }
   }
 
@@ -622,13 +656,16 @@ export const useSessionStore = defineStore('session', () => {
       await loadPreferences()
       await loadPublicConfig()
       return true
-    } catch {
-      // 会话不存在或已失效，清除并返回 false
-      try {
-        localStorage.removeItem('bridge_session_id')
-      } catch {
-        /* ignore */
+    } catch (e) {
+      // 只有服务端明确确认会话不存在或已关闭时才清除 ID；网络错误和 5xx 可重试。
+      if (e instanceof ApiError && (e.status === 404 || e.code === 'ERR_2002')) {
+        try {
+          localStorage.removeItem('bridge_session_id')
+        } catch {
+          /* ignore */
+        }
       }
+      status.value = 'error'
       return false
     }
   }

@@ -39,6 +39,8 @@ const xingyunDownloadProgress = ref<number | null>(null)
 const xingyunError = ref('')
 let xingyunAvatar: XmovAvatarInstance | null = null
 let xingyunWatchdog: number | null = null
+let initTimer: number | null = null
+let disposed = false
 
 /**
  * 解析星云凭据。
@@ -54,14 +56,14 @@ let credentialsResolved = false
 
 async function resolveCredentials(): Promise<{ appId: string; appSecret: string } | null> {
   if (credentialsResolved) return resolvedCredentials
-  credentialsResolved = true
   try {
     const cfg = await api.getPublicConfig()
     if (cfg.xingyun_app_id && cfg.xingyun_app_secret) {
       resolvedCredentials = { appId: cfg.xingyun_app_id, appSecret: cfg.xingyun_app_secret }
     }
+    credentialsResolved = true
   } catch {
-    // 后端不可用或未配置：保持降级数字人
+    // 网络失败不缓存结果，下一次挂载仍可恢复数字人。
   }
   return resolvedCredentials
 }
@@ -154,7 +156,7 @@ function hasRenderedXingyunCanvas(): boolean {
 
 async function initXingyun() {
   const credentials = await resolveCredentials()
-  if (!credentials) return
+  if (disposed || !credentials) return
   if (!supportsWebGL2()) {
     xingyunError.value = '当前浏览器不支持 WebGL2，已使用降级数字人'
     return
@@ -164,6 +166,7 @@ async function initXingyun() {
   xingyunDownloadProgress.value = 0
   try {
     await loadXingyunSdk()
+    if (disposed) return
     if (!window.XmovAvatar) throw new Error('星云 SDK 加载成功但未暴露 XmovAvatar 构造函数')
     // 注意：SDK 内部使用 querySelector，containerId 需要 # 前缀
     xingyunAvatar = new window.XmovAvatar({
@@ -186,6 +189,11 @@ async function initXingyun() {
         if (import.meta.env.DEV) console.warn('[Xingyun] status=', status)
       },
     })
+    if (disposed) {
+      xingyunAvatar.destroy('component_unmounted')
+      xingyunAvatar = null
+      return
+    }
     // SDK init：不同版本签名不同，先无参 → 再带参，避免 TypeError
     const avatarWithInit = xingyunAvatar as unknown as {
       init: (options?: { onDownloadProgress?: (progress: number) => void }) => Promise<void>
@@ -198,6 +206,11 @@ async function initXingyun() {
           xingyunDownloadProgress.value = Math.round(progress * 100)
         },
       })
+    }
+    if (disposed) {
+      xingyunAvatar.destroy('component_unmounted')
+      xingyunAvatar = null
+      return
     }
     xingyunReady.value = true
     ensureXingyunMuted()
@@ -459,14 +472,23 @@ watch(
 )
 
 onMounted(async () => {
+  disposed = false
   // 等待 DOM 渲染完成，确保 v-if 的容器已挂载到 document
   await nextTick()
   // 首屏加速：延迟一帧初始化数字人 SDK，避免阻塞首屏渲染
   // （SDK 脚本在 initXingyun 内按需动态注入，未配置数字人时不下载数 MB 脚本）
-  setTimeout(() => void initXingyun(), 100)
+  initTimer = window.setTimeout(() => {
+    initTimer = null
+    void initXingyun()
+  }, 100)
 })
 
 onUnmounted(() => {
+  disposed = true
+  if (initTimer !== null) {
+    window.clearTimeout(initTimer)
+    initTimer = null
+  }
   clearSpeakFallback()
   // 释放 MutationObserver，避免组件卸载后回调仍持有 DOM 引用
   xingyunMuteObserver?.disconnect()

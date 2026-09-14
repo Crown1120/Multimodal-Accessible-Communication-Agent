@@ -29,6 +29,7 @@ const TYPES: BridgeEvent['type'][] = [
   'widget.update',
   'widget.close',
   'error',
+  'resync.required',
 ]
 
 /** 重连退避参数 */

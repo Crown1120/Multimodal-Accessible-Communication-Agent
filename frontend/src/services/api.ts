@@ -4,7 +4,7 @@ import type { Message, Session, Mode, Scene } from '@/types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
-class ApiError extends Error {
+export class ApiError extends Error {
   code: string
   details?: Record<string, unknown>
   status?: number
@@ -148,5 +148,3 @@ export const api = {
       `/widgets/${widgetId}`,
     ),
 }
-
-export { ApiError }

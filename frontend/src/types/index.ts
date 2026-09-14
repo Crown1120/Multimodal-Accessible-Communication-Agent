@@ -27,6 +27,7 @@ export type EventType =
   | 'widget.update'
   | 'widget.close'
   | 'error'
+  | 'resync.required'
 
 /** Widget 类型 */
 export type WidgetType =

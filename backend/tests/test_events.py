@@ -141,3 +141,16 @@ class TestEventBus:
         bus.drop("sess_drop")
         assert bus.has_session("sess_drop") is False
         assert bus.session_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_expired_replay_requests_resync(self):
+        bus = EventBus()
+        for _ in range(300):
+            await bus.publish("sess_expired", make_event(EventType.AGENT_STARTED, "sess_expired", 0))
+
+        sub = await bus.subscribe("sess_expired", last_seq=1)
+        event = await sub.queue.get()
+
+        assert event.type == EventType.RESYNC_REQUIRED
+        assert event.session_id == "sess_expired"
+        assert event.data["resume_seq"] == 300

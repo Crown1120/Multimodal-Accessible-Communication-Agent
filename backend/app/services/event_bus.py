@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import defaultdict, deque
+from collections import deque
 
-from app.core.events import Event
+from app.core.events import Event, EventType, make_event
 from app.core.logging import get_logger
 
 logger = get_logger()
@@ -50,7 +50,8 @@ class Subscriber:
 
 
 class _SessionStream:
-    def __init__(self) -> None:
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
         self._subscribers: list[Subscriber] = []
         self._buffer: deque[Event] = deque(maxlen=_REPLAY_BUFFER)
         self._seq = 0
@@ -89,6 +90,21 @@ class _SessionStream:
         # Replay and registration must be atomic, otherwise an event published
         # between these operations can be missed by a reconnecting client.
         async with self._lock:
+            replay_expired = last_seq < self._seq and (
+                not self._buffer or last_seq < self._buffer[0].seq - 1
+            )
+            if replay_expired:
+                # Synthetic event uses the current sequence as a checkpoint. Events
+                # published after registration are queued after it and remain usable.
+                sub.queue.put_nowait(
+                    make_event(
+                        EventType.RESYNC_REQUIRED,
+                        self.session_id,
+                        self._seq,
+                        reason="replay_window_expired",
+                        resume_seq=self._seq,
+                    )
+                )
             for ev in self._buffer:
                 if ev.seq > last_seq:
                     try:
@@ -135,10 +151,14 @@ class _SessionStream:
 
 class EventBus:
     def __init__(self) -> None:
-        self._streams: dict[str, _SessionStream] = defaultdict(_SessionStream)
+        self._streams: dict[str, _SessionStream] = {}
 
     def stream(self, session_id: str) -> _SessionStream:
-        return self._streams[session_id]
+        stream = self._streams.get(session_id)
+        if stream is None:
+            stream = _SessionStream(session_id)
+            self._streams[session_id] = stream
+        return stream
 
     async def publish(self, session_id: str, event: Event) -> Event:
         return await self.stream(session_id).publish(event)

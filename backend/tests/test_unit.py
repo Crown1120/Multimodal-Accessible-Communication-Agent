@@ -9,6 +9,7 @@ from app.adapters.translator import MockTranslatorAdapter
 from app.agent.dialect import get_dialect_hints, normalize
 from app.agent.graph import BridgeAgent
 from app.core.errors import ErrorCode
+from app.mcp.tools import RouteQueryTool
 from app.rag.store import _match, _to_chroma_where
 
 
@@ -468,3 +469,18 @@ class TestErrorCodes:
         err = AdapterError(ErrorCode.ADAPTER_ASR_FAILED, "ASR失败", details={"k": "v"})
         assert err.code == ErrorCode.ADAPTER_ASR_FAILED
         assert err.details == {"k": "v"}
+
+
+class TestSceneRouteData:
+    """路线数据必须按场景使用对应的入口和无障碍设施。"""
+
+    @pytest.mark.asyncio
+    async def test_government_route_does_not_use_hospital_coordinates(self):
+        payload = (await RouteQueryTool().run(
+            destination="户籍",
+            scene="government",
+            wheelchair=True,
+        ))["result"]
+
+        assert payload["origin_coord"] == [121.4895, 31.2395]
+        assert all("医院" not in poi["name"] for poi in payload["accessibility_facilities"])

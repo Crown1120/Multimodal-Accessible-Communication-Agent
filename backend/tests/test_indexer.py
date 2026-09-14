@@ -153,3 +153,11 @@ class TestIndexKnowledge:
         store = InMemoryVectorStore()
         count = await index_knowledge(store, knowledge_dir=Path("/nonexistent/path"))
         assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_replace_discards_stale_snapshot(self):
+        store = InMemoryVectorStore()
+        await store.add([Document(id="old", text="旧内容")])
+        await store.replace([Document(id="new", text="新内容")])
+
+        assert [doc.id for doc in store._docs] == ["new"]  # noqa: SLF001

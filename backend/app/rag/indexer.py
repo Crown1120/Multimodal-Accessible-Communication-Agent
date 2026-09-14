@@ -91,7 +91,7 @@ async def index_knowledge(store: VectorStore, knowledge_dir: Path | None = None)
                 )
             )
 
-    await store.add(docs)
+    await store.replace(docs)
     # 知识库内容可能已变更：清空 LLM 回复缓存，避免继续返回基于旧知识的答案
     cleared = clear_llm_cache()
     if cleared:

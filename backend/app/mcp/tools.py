@@ -24,15 +24,26 @@ _GOVERNMENT_LOCATIONS: dict[str, dict] = {
     "公积金": {"floor": 1, "area": "公积金窗口", "direction": "C 区", "coord": [121.4904, 31.2402]},
 }
 
-# 起点（大厅入口）坐标
-_ORIGIN_COORD = [121.4730, 31.2303]
-
-# 无障碍设施数据（轮椅模式使用）
-_ACCESSIBILITY_FACILITIES: dict[str, dict] = {
-    "无障碍洗手间": {"floor": 1, "area": "大厅西侧", "coord": [121.4726, 31.2305], "type": "restroom"},
-    "无障碍电梯": {"floor": 1, "area": "大厅中部", "coord": [121.4735, 31.2304], "type": "elevator"},
-    "坡道入口": {"floor": 1, "area": "医院东门", "coord": [121.4740, 31.2303], "type": "ramp"},
-    "轮椅租借处": {"floor": 1, "area": "服务台旁", "coord": [121.4732, 31.2302], "type": "wheelchair_rental"},
+# 各场景独立的入口与无障碍设施，避免政务路线复用医院地理数据。
+_SCENE_MAP_CONFIG: dict[str, dict] = {
+    "hospital": {
+        "origin_coord": [121.4730, 31.2303],
+        "accessibility": {
+            "无障碍洗手间": {"floor": 1, "area": "大厅西侧", "coord": [121.4726, 31.2305], "type": "restroom"},
+            "无障碍电梯": {"floor": 1, "area": "大厅中部", "coord": [121.4735, 31.2304], "type": "elevator"},
+            "坡道入口": {"floor": 1, "area": "医院东门", "coord": [121.4740, 31.2303], "type": "ramp"},
+            "轮椅租借处": {"floor": 1, "area": "服务台旁", "coord": [121.4732, 31.2302], "type": "wheelchair_rental"},
+        },
+    },
+    "government": {
+        "origin_coord": [121.4895, 31.2395],
+        "accessibility": {
+            "无障碍洗手间": {"floor": 1, "area": "服务大厅西侧", "coord": [121.4892, 31.2398], "type": "restroom"},
+            "无障碍电梯": {"floor": 1, "area": "服务大厅中部", "coord": [121.4897, 31.2397], "type": "elevator"},
+            "坡道入口": {"floor": 1, "area": "政务大厅正门", "coord": [121.4895, 31.2394], "type": "ramp"},
+            "轮椅服务点": {"floor": 1, "area": "导办台旁", "coord": [121.4896, 31.2396], "type": "wheelchair_rental"},
+        },
+    },
 }
 
 # 翻译词典（演示用）
@@ -53,6 +64,10 @@ _TRANSLATE_DICT = {
 def _locations_for(scene: str) -> dict[str, dict]:
     """按场景返回地点表（医院 / 政务）。"""
     return _GOVERNMENT_LOCATIONS if scene == "government" else _HOSPITAL_LOCATIONS
+
+
+def _map_config_for(scene: str) -> dict:
+    return _SCENE_MAP_CONFIG.get(scene, _SCENE_MAP_CONFIG["hospital"])
 
 
 class ServiceQueryTool(Tool):
@@ -128,10 +143,13 @@ class RouteQueryTool(Tool):
                     f"到达 {destination}（{dest_info['area']}）",
                 ]
         # 生成示意路线折线（起点 → 大厅中轴 → 电梯 → 目的地）
-        ox, oy = _ORIGIN_COORD
+        map_config = _map_config_for(scene)
+        origin_coord = list(map_config["origin_coord"])
+        accessibility = map_config["accessibility"]
+        ox, oy = origin_coord
         dx, dy = dest_info["coord"]
         midx, midy = (ox + dx) / 2, (oy + dy) / 2
-        path = [_ORIGIN_COORD, [midx, oy], [midx, midy], [midx, dy], dest_info["coord"]]
+        path = [origin_coord, [midx, oy], [midx, midy], [midx, dy], list(dest_info["coord"])]
         pois = [
             {"name": k, "coord": v["coord"], "floor": v["floor"]}
             for k, v in table.items()
@@ -141,15 +159,15 @@ class RouteQueryTool(Tool):
         if wheelchair:
             accessibility_pois = [
                 {"name": k, "coord": v["coord"], "floor": v["floor"], "type": v["type"], "accessibility": True}
-                for k, v in _ACCESSIBILITY_FACILITIES.items()
+                for k, v in accessibility.items()
             ]
         payload = {
             "origin": origin,
             "destination": destination,
             "steps": steps,
             "floor": floor,
-            "origin_coord": _ORIGIN_COORD,
-            "dest_coord": dest_info["coord"],
+            "origin_coord": origin_coord,
+            "dest_coord": list(dest_info["coord"]),
             "path": path,
             "pois": pois,
             "wheelchair": wheelchair,

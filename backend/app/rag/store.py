@@ -33,6 +33,8 @@ class VectorStore(Protocol):
 
     async def add(self, docs: list[Document]) -> None: ...
 
+    async def replace(self, docs: list[Document]) -> None: ...
+
     async def query(
         self,
         text: str,
@@ -62,6 +64,14 @@ class InMemoryVectorStore:
             self._docs.append(d)
             self._vecs.append(vec)
             self._norms.append(vector_norm(vec))
+
+    async def replace(self, docs: list[Document]) -> None:
+        """Build all vectors locally, then publish one complete snapshot."""
+        vecs = [embed_text(d.text) for d in docs]
+        norms = [vector_norm(vec) for vec in vecs]
+        self._docs = list(docs)
+        self._vecs = vecs
+        self._norms = norms
 
     async def query(
         self,
@@ -156,6 +166,21 @@ class ChromaVectorStore:
             documents=[d.text for d in docs],
             metadatas=[d.metadata for d in docs],
         )
+
+    async def replace(self, docs: list[Document]) -> None:
+        """Upsert the new snapshot before removing documents no longer present."""
+        collection = self._collection_or_raise()
+        existing = collection.get(where={"content_type": "text"}, include=[])
+        old_ids = set(existing.get("ids") or [])
+        if docs:
+            collection.upsert(
+                ids=[d.id for d in docs],
+                documents=[d.text for d in docs],
+                metadatas=[d.metadata for d in docs],
+            )
+        stale_ids = old_ids - {d.id for d in docs}
+        if stale_ids:
+            collection.delete(ids=list(stale_ids))
 
     async def query(
         self,

@@ -44,6 +44,8 @@ class EventType(str, Enum):
 
     # 错误
     ERROR = "error"
+    # 重放窗口已覆盖，客户端必须重新同步持久化状态
+    RESYNC_REQUIRED = "resync.required"
 
 
 class Event(BaseModel):

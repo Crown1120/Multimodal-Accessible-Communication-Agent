@@ -65,7 +65,6 @@ class RAGRetriever:
     async def reindex(self) -> int:
         """Replace the current index without exposing implementation details."""
         async with self._index_lock:
-            await self.store.clear()
             count = await index_knowledge(self.store)
             self._indexed = True
             logger.info("RAG 索引重建完成，文档块数={}", count)

@@ -93,6 +93,29 @@ class SessionRepository:
         result = await self.db.execute(stmt)
         return list(reversed(result.scalars().all()))
 
+    async def list_messages_before(
+        self,
+        session_id: str,
+        before_message_id: str,
+        *,
+        limit: int | None = None,
+    ) -> list[Message]:
+        """Return messages committed before a message in the session.
+
+        Message IDs are generated with a time-and-counter prefix, so ordering by
+        ID gives a deterministic session-local cutoff even when timestamps tie.
+        This prevents a queued Agent from reading messages submitted after it.
+        """
+        stmt = (
+            select(Message)
+            .where(Message.session_id == session_id, Message.id < before_message_id)
+            .order_by(Message.id.desc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        result = await self.db.execute(stmt)
+        return list(reversed(result.scalars().all()))
+
 
 class MessageRepository:
     def __init__(self, db: AsyncSession) -> None:

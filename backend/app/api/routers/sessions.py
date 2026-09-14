@@ -15,15 +15,16 @@ DELETE /api/sessions/{session_id}           关闭会话
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.asr import get_asr_adapter, get_asr_adapter_name
+from app.adapters.asr import get_asr_adapter_async, get_asr_adapter_name
 from app.agent.runner import SimpleAgentRunner
 from app.core.config import settings
-from app.core.errors import AdapterError, BridgeError, ErrorCode
+from app.core.errors import AdapterError, BridgeError, ErrorCode, SessionError
 from app.core.events import EventType, make_event, to_sse
 from app.core.logging import get_logger
 from app.core.security import rate_limit, read_upload_limited
@@ -52,6 +53,12 @@ from app.services.event_bus import event_bus
 logger = get_logger()
 router = APIRouter()
 _session_locks: dict[str, asyncio.Lock] = {}
+# 单会话最多允许排队的 Agent 数量。超过后立即返回，避免慢上游导致
+# 后台任务无限堆积；当前运行任务也计入该数量。
+_MAX_PENDING_AGENTS = 8
+_pending_agents: dict[str, int] = {}
+_closing_sessions: set[str] = set()
+_audio_semaphore: asyncio.Semaphore | None = None
 # 单 IP 在线 SSE 连接计数：每条连接占一个 1024 事件队列，必须限制总量防内存耗尽
 _sse_conn_counts: dict[str, int] = {}
 
@@ -81,6 +88,45 @@ def _release_sse_slot(client_ip: str) -> None:
 def _get_session_lock(session_id: str) -> asyncio.Lock:
     """Return the process-local serialization lock for one session."""
     return _session_locks.setdefault(session_id, asyncio.Lock())
+
+
+def _get_audio_semaphore() -> asyncio.Semaphore:
+    global _audio_semaphore
+    if _audio_semaphore is None:
+        _audio_semaphore = asyncio.Semaphore(max(1, settings.audio_max_concurrency))
+    return _audio_semaphore
+
+
+async def _audio_slot() -> AsyncIterator[None]:
+    """Limit simultaneous audio decoding and ASR work for this process."""
+    semaphore = _get_audio_semaphore()
+    try:
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
+    except asyncio.TimeoutError as exc:
+        raise BridgeError(ErrorCode.SESSION_BUSY, "当前语音服务繁忙，请稍后重试") from exc
+    try:
+        yield
+    finally:
+        semaphore.release()
+
+
+def _reserve_agent_slot(session_id: str) -> bool:
+    """Reserve one bounded Agent slot for a session."""
+    if session_id in _closing_sessions:
+        return False
+    count = _pending_agents.get(session_id, 0)
+    if count >= _MAX_PENDING_AGENTS:
+        return False
+    _pending_agents[session_id] = count + 1
+    return True
+
+
+def _release_agent_slot(session_id: str) -> None:
+    remaining = _pending_agents.get(session_id, 1) - 1
+    if remaining > 0:
+        _pending_agents[session_id] = remaining
+    else:
+        _pending_agents.pop(session_id, None)
 
 
 @router.post("", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
@@ -118,42 +164,49 @@ async def send_message(
     repo = SessionRepository(db)
     await repo.get(session_id)  # 校验存在且未关闭
 
-    # 输入长度限制：超出截断并记录
-    content = payload.content
-    if len(content) > settings.max_message_length:
-        content = content[:settings.max_message_length]
-        logger.warning("消息超长截断 session={} original_len={}", session_id, len(payload.content))
+    if not _reserve_agent_slot(session_id):
+        raise BridgeError(ErrorCode.SESSION_BUSY, "当前会话正在处理较多请求，请稍后再试")
 
-    msg_repo = MessageRepository(db)
-    message = await msg_repo.add(
-        session_id=session_id,
-        role=payload.role,
-        content=content,
-        speaker=payload.speaker,
-        language=payload.language,
-        message_type=payload.message_type,
-    )
-    await db.commit()
+    try:
+        # 输入长度限制：超出截断并记录
+        content = payload.content
+        if len(content) > settings.max_message_length:
+            content = content[:settings.max_message_length]
+            logger.warning("消息超长截断 session={} original_len={}", session_id, len(payload.content))
 
-    # 异步启动 Agent（使用独立 DB 会话，避免与请求会话生命周期冲突）
-    run_id = new_run_id()
-    background_tasks.create(
-        _run_agent(session_id, message.content, message.id, run_id, wheelchair=payload.wheelchair),
-        name=f"agent:{session_id}:{run_id}",
-    )
+        msg_repo = MessageRepository(db)
+        message = await msg_repo.add(
+            session_id=session_id,
+            role=payload.role,
+            content=content,
+            speaker=payload.speaker,
+            language=payload.language,
+            message_type=payload.message_type,
+        )
+        await db.commit()
+
+        # 异步启动 Agent（使用独立 DB 会话，避免与请求会话生命周期冲突）
+        run_id = new_run_id()
+        background_tasks.create(
+            _run_agent(session_id, message.content, message.id, run_id, wheelchair=payload.wheelchair),
+            name=f"agent:{session_id}:{run_id}",
+        )
+    except Exception:
+        _release_agent_slot(session_id)
+        raise
     return SendMessageResponse(run_id=run_id, message_id=message.id)
 
 
 @router.post(
     "/{session_id}/audio",
     response_model=AudioTranscribeResponse,
-    dependencies=[Depends(rate_limit("audio"))],
+    dependencies=[Depends(rate_limit("audio")), Depends(_audio_slot)],
 )
 async def upload_audio(
     session_id: str,
     audio: UploadFile = File(...),
-    speaker: str = "staff",
-    language: str = "zh",
+    speaker: str = Form(default="staff", min_length=1, max_length=64),
+    language: str = Form(default="zh", min_length=2, max_length=16),
     db: AsyncSession = Depends(get_db),
 ) -> AudioTranscribeResponse:
     """上传音频：ASR 转为实时字幕并触发 Agent。
@@ -167,13 +220,32 @@ async def upload_audio(
     repo = SessionRepository(db)
     await repo.get(session_id)  # 校验会话
 
+    speaker = speaker.strip()
+    language = language.strip().lower()
+    if not speaker or any(ord(ch) < 32 for ch in speaker):
+        raise BridgeError(ErrorCode.BAD_REQUEST, "说话人标识无效")
+    if not language.replace("-", "").replace("_", "").isalnum():
+        raise BridgeError(ErrorCode.BAD_REQUEST, "语言标识无效")
+    allowed_types = {
+        "audio/webm",
+        "audio/ogg",
+        "audio/wav",
+        "audio/wave",
+        "audio/x-wav",
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/aac",
+    }
+    if audio.content_type and audio.content_type.lower() not in allowed_types:
+        raise BridgeError(ErrorCode.BAD_REQUEST, "不支持的音频格式")
+
     # 分块读取并强制大小上限，避免任意大小文件读入内存
     audio_bytes = await read_upload_limited(audio)
     if not audio_bytes:
         # 空文件属于客户端请求问题（400），不是上游适配器故障（502）
         raise BridgeError(ErrorCode.BAD_REQUEST, "音频为空")
 
-    asr = get_asr_adapter()
+    asr = await get_asr_adapter_async()
 
     # 流式识别：逐步推送 partial 字幕。
     # 每次尝试独立累积文本——首个适配器失败后重试时必须清空其残片，
@@ -200,9 +272,9 @@ async def upload_audio(
         partial_text = await _consume(asr)
     except AdapterError:
         # 适配器失败后自动重试（豆包 ASR 冷却后 get_asr_adapter 会返回 Whisper/Vosk）
-        from app.adapters.asr import get_asr_adapter as _get_asr  # noqa: PLC0415
+        from app.adapters.asr import get_asr_adapter_async as _get_asr  # noqa: PLC0415
 
-        fallback = _get_asr()
+        fallback = await _get_asr()
         try:
             partial_text = await _consume(fallback)
             asr = fallback
@@ -245,38 +317,46 @@ async def upload_audio(
             )
             return AudioTranscribeResponse(session_id=session_id, text="", ok=False)
 
-    # 持久化为 transcript 消息
-    msg_repo = MessageRepository(db)
-    message = await msg_repo.add(
-        session_id=session_id,
-        role="staff",
-        content=final_text,
-        speaker=speaker,
-        language=language,
-        message_type="transcript",
-    )
-    await db.commit()
+    # 先申请 Agent 名额，再持久化消息，避免满载时留下无人处理的转写消息。
+    if not _reserve_agent_slot(session_id):
+        raise BridgeError(ErrorCode.SESSION_BUSY, "当前会话正在处理较多请求，请稍后再试")
 
-    # 推送最终字幕（带 message_id，前端据此使用与服务端一致的消息 ID）
-    await event_bus.publish(
-        session_id,
-        make_event(
-            EventType.TRANSCRIPT_FINAL,
-            session_id,
-            0,
-            text=final_text,
+    try:
+        # 持久化为 transcript 消息
+        msg_repo = MessageRepository(db)
+        message = await msg_repo.add(
+            session_id=session_id,
+            role="staff",
+            content=final_text,
             speaker=speaker,
             language=language,
-            message_id=message.id,
-        ),
-    )
+            message_type="transcript",
+        )
+        await db.commit()
 
-    # 异步触发 Agent
-    run_id = new_run_id()
-    background_tasks.create(
-        _run_agent(session_id, final_text, message.id, run_id),
-        name=f"agent:{session_id}:{run_id}",
-    )
+        # 推送最终字幕（带 message_id，前端据此使用与服务端一致的消息 ID）
+        await event_bus.publish(
+            session_id,
+            make_event(
+                EventType.TRANSCRIPT_FINAL,
+                session_id,
+                0,
+                text=final_text,
+                speaker=speaker,
+                language=language,
+                message_id=message.id,
+            ),
+        )
+
+        # 异步触发 Agent
+        run_id = new_run_id()
+        background_tasks.create(
+            _run_agent(session_id, final_text, message.id, run_id),
+            name=f"agent:{session_id}:{run_id}",
+        )
+    except Exception:
+        _release_agent_slot(session_id)
+        raise
     return AudioTranscribeResponse(
         session_id=session_id,
         text=final_text,
@@ -294,44 +374,59 @@ async def _run_agent(
     run_id: str,
     wheelchair: bool | None = None,
 ) -> None:
-    async with _get_session_lock(session_id):
-        async with async_session_factory() as task_db:
-            try:
-                repo = SessionRepository(task_db)
-                session = await repo.get(session_id)
-                runner = SimpleAgentRunner(task_db)
+    try:
+        if session_id in _closing_sessions:
+            return
+        async with _get_session_lock(session_id):
+            if session_id in _closing_sessions:
+                return
+            async with async_session_factory() as task_db:
                 try:
-                    await asyncio.wait_for(
-                        runner.run(session, user_text, message_id, run_id, wheelchair=wheelchair),
-                        timeout=settings.agent_timeout_seconds,
-                    )
-                except asyncio.TimeoutError:
-                    logger.error("Agent 运行超时 session={} timeout={}s", session_id, settings.agent_timeout_seconds)
-                    await _finalize_run(task_db, run_id, status="timeout")
+                    repo = SessionRepository(task_db)
+                    session = await repo.get(session_id)
+                    runner = SimpleAgentRunner(task_db)
+                    try:
+                        await asyncio.wait_for(
+                            runner.run(session, user_text, message_id, run_id, wheelchair=wheelchair),
+                            timeout=settings.agent_timeout_seconds,
+                        )
+                    except asyncio.CancelledError:
+                        await _finalize_run(task_db, run_id, status="cancelled")
+                        raise
+                    except asyncio.TimeoutError:
+                        logger.error("Agent 运行超时 session={} timeout={}s", session_id, settings.agent_timeout_seconds)
+                        await _finalize_run(task_db, run_id, status="timeout")
+                        await event_bus.publish(
+                            session_id,
+                            make_event(
+                                EventType.ERROR,
+                                session_id,
+                                0,
+                                code="ERR_3002",
+                                message=f"处理超时（{settings.agent_timeout_seconds}秒），请简化问题后重试",
+                            ),
+                        )
+                except SessionError as exc:
+                    # 会话可能在任务排队期间被关闭；这种情况不应再发布错误事件，
+                    # 也不应把一个尚未创建的 run 标记为失败。
+                    if exc.code not in (ErrorCode.SESSION_CLOSED, ErrorCode.SESSION_NOT_FOUND):
+                        raise
+                except Exception:  # noqa: BLE001
+                    logger.exception("Agent 运行失败 session={}", session_id)
+                    # 同样要把 run 收尾，否则 agent_runs 会永久停留在 running
+                    await _finalize_run(task_db, run_id, status="failed")
                     await event_bus.publish(
                         session_id,
                         make_event(
                             EventType.ERROR,
                             session_id,
                             0,
-                            code="ERR_3002",
-                            message=f"处理超时（{settings.agent_timeout_seconds}秒），请简化问题后重试",
+                            code="ERR_3001",
+                            message="Agent 处理异常",
                         ),
                     )
-            except Exception:  # noqa: BLE001
-                logger.exception("Agent 运行失败 session={}", session_id)
-                # 同样要把 run 收尾，否则 agent_runs 会永久停留在 running
-                await _finalize_run(task_db, run_id, status="failed")
-                await event_bus.publish(
-                    session_id,
-                    make_event(
-                        EventType.ERROR,
-                        session_id,
-                        0,
-                        code="ERR_3001",
-                        message="Agent 处理异常",
-                    ),
-                )
+    finally:
+        _release_agent_slot(session_id)
 
 
 async def _finalize_run(db: AsyncSession, run_id: str, *, status: str) -> None:
@@ -425,11 +520,22 @@ async def close_session(
     session_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> SessionOut:
-    repo = SessionRepository(db)
-    session = await repo.close(session_id)
-    # 释放会话级进程内状态，避免长跑服务内存持续增长
-    _session_locks.pop(session_id, None)
-    event_bus.drop(session_id)
+    _closing_sessions.add(session_id)
+    try:
+        # 先取消运行中和排队中的任务，避免关闭请求长时间等待上游调用。
+        await background_tasks.cancel_matching(f"agent:{session_id}:")
+        # 再拿同一把会话锁，确保被取消的任务已经释放数据库状态。
+        async with _get_session_lock(session_id):
+            repo = SessionRepository(db)
+            session = await repo.close(session_id)
+            await db.commit()
+            await background_tasks.cancel_matching(f"tts:{session_id}:")
+    finally:
+        # 释放会话级进程内状态，避免长跑服务内存持续增长。
+        _session_locks.pop(session_id, None)
+        _pending_agents.pop(session_id, None)
+        event_bus.drop(session_id)
+        _closing_sessions.discard(session_id)
     return SessionOut.from_orm(session)
 
 

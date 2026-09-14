@@ -44,5 +44,14 @@ class BackgroundTaskManager:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
 
+    async def cancel_matching(self, prefix: str) -> None:
+        """Cancel and drain tracked tasks whose names start with ``prefix``."""
+        tasks = tuple(task for task in self._tasks if task.get_name().startswith(prefix))
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
 
 background_tasks = BackgroundTaskManager()

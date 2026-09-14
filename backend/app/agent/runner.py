@@ -66,12 +66,15 @@ class AgentRunner:
         # 持有未提交的写事务，导致并发创建会话/发消息时 database is locked。
         await self.db.commit()
 
-        # 2. 取历史（排除当前用户消息；仅取最近窗口，避免长会话全表拉取）
-        history_orm = await session_repo.list_messages(sid, limit=_HISTORY_WINDOW + 5)
+        # 2. 只读取当前消息之前的历史，避免排队期间提交的后续消息污染上下文。
+        history_orm = await session_repo.list_messages_before(
+            sid,
+            message_id,
+            limit=_HISTORY_WINDOW + 5,
+        )
         history = [
             {"role": m.role, "content": m.content}
             for m in history_orm
-            if m.id != message_id
         ][-_HISTORY_WINDOW:]
 
         state: AgentState = {

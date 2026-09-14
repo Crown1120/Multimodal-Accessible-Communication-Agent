@@ -28,6 +28,7 @@ class ErrorCode(str, Enum):
     SESSION_NOT_FOUND = "ERR_2001"
     SESSION_CLOSED = "ERR_2002"
     MESSAGE_EMPTY = "ERR_2003"
+    SESSION_BUSY = "ERR_2004"
 
     # Agent
     AGENT_UNEXPECTED = "ERR_3001"

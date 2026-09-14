@@ -30,6 +30,7 @@ _ERROR_STATUS: dict[ErrorCode, int] = {
     ErrorCode.SESSION_NOT_FOUND: 404,
     ErrorCode.SESSION_CLOSED: 409,
     ErrorCode.MESSAGE_EMPTY: 400,
+    ErrorCode.SESSION_BUSY: 429,
     ErrorCode.AGENT_LOW_CONFIDENCE: 400,
     ErrorCode.AGENT_TIMEOUT: 504,
     ErrorCode.AGENT_UNEXPECTED: 500,

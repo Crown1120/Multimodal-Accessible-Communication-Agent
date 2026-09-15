@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import BIcon from '@/components/BIcon.vue'
 import DigitalHuman from '@/components/DigitalHuman.vue'
@@ -16,6 +16,7 @@ import { useSessionStore } from '@/stores/session'
 
 const store = useSessionStore()
 const toast = useToast()
+const isConversationCollapsed = ref(false)
 
 // 模式变化时同步到根元素（驱动无障碍 CSS 变量）
 watch(
@@ -113,7 +114,11 @@ const statusInfo = computed(() => {
       </div>
     </header>
 
-    <main id="main-content" class="body">
+    <main
+      id="main-content"
+      class="body"
+      :class="{ 'conversation-collapsed': isConversationCollapsed }"
+    >
       <!-- 视频通话主画面：数字人居中，服务信息也收纳在数字人框内 -->
       <section class="stage" aria-label="视频通话画面">
         <DigitalHuman />
@@ -127,8 +132,16 @@ const statusInfo = computed(() => {
       </section>
 
       <!-- 沟通记录栏：实时字幕 + 双向消息历史（听障沟通与降级模式的核心） -->
-      <section class="conversation" aria-label="沟通记录">
-        <SubtitleBar />
+      <section
+        id="conversation-panel"
+        class="conversation"
+        :class="{ collapsed: isConversationCollapsed }"
+        aria-label="沟通记录"
+      >
+        <SubtitleBar
+          :collapsed="isConversationCollapsed"
+          @toggle="isConversationCollapsed = !isConversationCollapsed"
+        />
         <MessageList />
       </section>
     </main>
@@ -270,6 +283,7 @@ const statusInfo = computed(() => {
   gap: 14px;
   min-height: 0;
   padding: 14px 18px 18px;
+  position: relative;
 }
 
 .stage {
@@ -299,6 +313,30 @@ const statusInfo = computed(() => {
   border: 1px solid var(--color-border);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
+  transition:
+    flex-basis 0.24s var(--ease-out),
+    width 0.24s var(--ease-out),
+    min-width 0.24s var(--ease-out);
+}
+
+/* 收起时释放整个右侧栏空间，让数字人区域自动铺满主体。 */
+.conversation.collapsed {
+  flex: 0 0 0;
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  border: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+.conversation.collapsed :deep(.message-list) {
+  display: none;
+}
+.conversation.collapsed :deep(.subtitle-bar) {
+  position: absolute;
+  top: 14px;
+  right: 0;
+  z-index: 11;
 }
 
 /* 服务信息浮动面板：叠加在数字人画面右下角，不遮挡输入栏 */

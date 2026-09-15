@@ -50,4 +50,28 @@ describe('SubtitleBar', () => {
     const wrapper = mount(SubtitleBar)
     expect(wrapper.find('.subtitle-bar').classes()).toContain('active')
   })
+
+  it('通过按钮切换整个沟通记录栏', async () => {
+    const wrapper = mount(SubtitleBar, { props: { collapsed: false } })
+    const toggle = wrapper.find('.subtitle-toggle')
+
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(toggle.attributes('aria-label')).toBe('收起沟通记录栏')
+    expect(wrapper.find('.subtitle-text').isVisible()).toBe(true)
+
+    await toggle.trigger('click')
+
+    expect(wrapper.emitted('toggle')).toHaveLength(1)
+  })
+
+  it('收起状态显示向左展开按钮并隐藏字幕内容', () => {
+    const wrapper = mount(SubtitleBar, { props: { collapsed: true } })
+    const toggle = wrapper.find('.subtitle-toggle')
+
+    expect(wrapper.find('.subtitle-bar').classes()).toContain('collapsed')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.attributes('aria-label')).toBe('展开沟通记录栏')
+    expect(wrapper.find('.subtitle-label').isVisible()).toBe(false)
+    expect(wrapper.find('.subtitle-text').isVisible()).toBe(false)
+  })
 })

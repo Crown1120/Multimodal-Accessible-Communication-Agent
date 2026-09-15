@@ -157,7 +157,7 @@ async function retry(m: (typeof store.messages)[number]) {
   animation: msgIn 0.28s var(--ease-out);
 }
 .row.user {
-  flex-direction: row-reverse;
+  justify-content: flex-end;
 }
 @keyframes msgIn {
   from {

@@ -17,31 +17,55 @@
 
 Bridge 采用前后端分离架构，整体分为接入层、智能体层、能力适配层与数据层。
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                      前端（Vue 3）                        │
-│  工作台 / 字幕栏 / 数字人 / Widget 面板 / 模式切换 / 偏好  │
-└───────────────────────┬──────────────────────────────────┘
-                        │ REST + SSE（Server-Sent Events）
-┌───────────────────────▼──────────────────────────────────┐
-│                    FastAPI 后端                           │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐ │
-│  │ API 路由  │ │ 事件总线  │ │ 任务管理  │ │  安全中间件   │ │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────────┘ │
-│  ┌──────────────────────────────────────────────────────┐│
-│  │              LangGraph Agent 智能体                   ││
-│  │   解析 → 意图路由 → RAG 检索 / MCP 工具 → 回复生成    ││
-│  └──────────────────────────────────────────────────────┘│
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐ │
-│  │ LLM 适配 │ │ ASR 适配 │ │ TTS 适配 │ │ 数字人/翻译适配│ │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────────┘ │
-└───────────────────────┬──────────────────────────────────┘
-                        │
-┌───────────────────────▼──────────────────────────────────┐
-│                      数据层                              │
-│   SQLite（会话/偏好/工具调用）  +  RAG 知识库（向量检索）  │
-└──────────────────────────────────────────────────────────┘
-```
+<table style="width:100%; border-collapse:collapse; text-align:center; font-size:14px;">
+  <tr>
+    <td style="border:2px solid #4A90D9; background:#E8F1FB; padding:14px; font-weight:bold;">
+      前端（Vue 3）<br/>
+      <span style="font-weight:normal; font-size:13px;">工作台 / 字幕栏 / 数字人 / Widget 面板 / 模式切换 / 偏好</span>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:6px; color:#555; font-size:13px;">▼ REST + SSE（Server-Sent Events）</td>
+  </tr>
+  <tr>
+    <td style="border:2px solid #4A90D9; background:#EAF5EC; padding:14px;">
+      <table style="width:100%; border-collapse:collapse; margin-bottom:10px;">
+        <tr>
+          <td style="border:1px solid #888; padding:8px; background:#fff; width:25%;">API 路由</td>
+          <td style="border:1px solid #888; padding:8px; background:#fff; width:25%;">事件总线</td>
+          <td style="border:1px solid #888; padding:8px; background:#fff; width:25%;">任务管理</td>
+          <td style="border:1px solid #888; padding:8px; background:#fff; width:25%;">安全中间件</td>
+        </tr>
+      </table>
+      <table style="width:100%; border-collapse:collapse; margin-bottom:10px;">
+        <tr>
+          <td style="border:1px solid #2E7D32; padding:12px; background:#C8E6C9; font-weight:bold;">
+            LangGraph Agent 智能体<br/>
+            <span style="font-weight:normal; font-size:13px;">解析 → 意图路由 → RAG 检索 / MCP 工具 → 回复生成</span>
+          </td>
+        </tr>
+      </table>
+      <table style="width:100%; border-collapse:collapse;">
+        <tr>
+          <td style="border:1px solid #888; padding:8px; background:#fff; width:25%;">LLM 适配</td>
+          <td style="border:1px solid #888; padding:8px; background:#fff; width:25%;">ASR 适配</td>
+          <td style="border:1px solid #888; padding:8px; background:#fff; width:25%;">TTS 适配</td>
+          <td style="border:1px solid #888; padding:8px; background:#fff; width:25%;">数字人/翻译适配</td>
+        </tr>
+      </table>
+      <div style="margin-top:8px; font-weight:bold;">FastAPI 后端</div>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:6px; color:#555; font-size:13px;">▼</td>
+  </tr>
+  <tr>
+    <td style="border:2px solid #4A90D9; background:#FFF4E5; padding:14px; font-weight:bold;">
+      数据层<br/>
+      <span style="font-weight:normal; font-size:13px;">SQLite（会话/偏好/工具调用） + RAG 知识库（向量检索）</span>
+    </td>
+  </tr>
+</table>
 
 ### 2.2 技术栈
 
